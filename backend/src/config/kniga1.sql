@@ -1,0 +1,75 @@
+-- 1 Блюда - 5 ta taom
+INSERT INTO menu_categories (name) VALUES ('1 Блюда') ON CONFLICT DO NOTHING;
+
+-- Чучбара по домашнему
+INSERT INTO menu_items (category_id, name, price) SELECT id, 'Чучбара по домашнему', 200 FROM menu_categories WHERE name = '1 Блюда';
+INSERT INTO ingredients (name, unit, stock_quantity, min_quantity, price_per_unit, category) SELECT 'Пельмень', 'kg', 0, 0, 0, 'Ингредиенты' WHERE NOT EXISTS (SELECT 1 FROM ingredients WHERE name ILIKE '%Пельмень%');
+INSERT INTO recipe_items (menu_item_id, ingredient_id, quantity) SELECT m.id, i.id, 0.11 FROM menu_items m JOIN menu_categories c ON m.category_id = c.id, ingredients i WHERE m.name = 'Чучбара по домашнему' AND c.name = '1 Блюда' AND i.name ILIKE '%Пельмень%' LIMIT 1;
+INSERT INTO ingredients (name, unit, stock_quantity, min_quantity, price_per_unit, category) SELECT 'Зажарка ТТК', 'kg', 0, 0, 0, 'Ингредиенты' WHERE NOT EXISTS (SELECT 1 FROM ingredients WHERE name ILIKE '%Зажарка ТТК%');
+INSERT INTO recipe_items (menu_item_id, ingredient_id, quantity) SELECT m.id, i.id, 0.1 FROM menu_items m JOIN menu_categories c ON m.category_id = c.id, ingredients i WHERE m.name = 'Чучбара по домашнему' AND c.name = '1 Блюда' AND i.name ILIKE '%Зажарка ТТК%' LIMIT 1;
+INSERT INTO ingredients (name, unit, stock_quantity, min_quantity, price_per_unit, category) SELECT 'Чеснок', 'kg', 0, 0, 0, 'Ингредиенты' WHERE NOT EXISTS (SELECT 1 FROM ingredients WHERE name ILIKE '%Чеснок%');
+INSERT INTO recipe_items (menu_item_id, ingredient_id, quantity) SELECT m.id, i.id, 0.002 FROM menu_items m JOIN menu_categories c ON m.category_id = c.id, ingredients i WHERE m.name = 'Чучбара по домашнему' AND c.name = '1 Блюда' AND i.name ILIKE '%Чеснок%' LIMIT 1;
+INSERT INTO ingredients (name, unit, stock_quantity, min_quantity, price_per_unit, category) SELECT 'Сметано (700гр/шт)', 'kg', 0, 0, 0, 'Ингредиенты' WHERE NOT EXISTS (SELECT 1 FROM ingredients WHERE name ILIKE '%Сметано (700гр/шт)%');
+INSERT INTO recipe_items (menu_item_id, ingredient_id, quantity) SELECT m.id, i.id, 0.04 FROM menu_items m JOIN menu_categories c ON m.category_id = c.id, ingredients i WHERE m.name = 'Чучбара по домашнему' AND c.name = '1 Блюда' AND i.name ILIKE '%Сметано (700гр/шт)%' LIMIT 1;
+INSERT INTO ingredients (name, unit, stock_quantity, min_quantity, price_per_unit, category) SELECT 'Зелень', 'kg', 0, 0, 0, 'Ингредиенты' WHERE NOT EXISTS (SELECT 1 FROM ingredients WHERE name ILIKE '%Зелень%');
+INSERT INTO recipe_items (menu_item_id, ingredient_id, quantity) SELECT m.id, i.id, 0.005 FROM menu_items m JOIN menu_categories c ON m.category_id = c.id, ingredients i WHERE m.name = 'Чучбара по домашнему' AND c.name = '1 Блюда' AND i.name ILIKE '%Зелень%' LIMIT 1;
+
+-- Харчо по грузински
+INSERT INTO menu_items (category_id, name, price) SELECT id, 'Харчо по грузински', 200 FROM menu_categories WHERE name = '1 Блюда';
+INSERT INTO ingredients (name, unit, stock_quantity, min_quantity, price_per_unit, category) SELECT 'Рис лазер', 'kg', 0, 0, 0, 'Ингредиенты' WHERE NOT EXISTS (SELECT 1 FROM ingredients WHERE name ILIKE '%Рис лазер%');
+INSERT INTO recipe_items (menu_item_id, ingredient_id, quantity) SELECT m.id, i.id, 0.03 FROM menu_items m JOIN menu_categories c ON m.category_id = c.id, ingredients i WHERE m.name = 'Харчо по грузински' AND c.name = '1 Блюда' AND i.name ILIKE '%Рис лазер%' LIMIT 1;
+INSERT INTO ingredients (name, unit, stock_quantity, min_quantity, price_per_unit, category) SELECT 'Зажарка', 'kg', 0, 0, 0, 'Ингредиенты' WHERE NOT EXISTS (SELECT 1 FROM ingredients WHERE name ILIKE '%Зажарка%');
+INSERT INTO recipe_items (menu_item_id, ingredient_id, quantity) SELECT m.id, i.id, 0.1 FROM menu_items m JOIN menu_categories c ON m.category_id = c.id, ingredients i WHERE m.name = 'Харчо по грузински' AND c.name = '1 Блюда' AND i.name ILIKE '%Зажарка%' LIMIT 1;
+INSERT INTO ingredients (name, unit, stock_quantity, min_quantity, price_per_unit, category) SELECT 'Хмели-сунели приправа', 'litr', 0, 0, 0, 'Ингредиенты' WHERE NOT EXISTS (SELECT 1 FROM ingredients WHERE name ILIKE '%Хмели-сунели приправа%');
+INSERT INTO recipe_items (menu_item_id, ingredient_id, quantity) SELECT m.id, i.id, 0.002 FROM menu_items m JOIN menu_categories c ON m.category_id = c.id, ingredients i WHERE m.name = 'Харчо по грузински' AND c.name = '1 Блюда' AND i.name ILIKE '%Хмели-сунели приправа%' LIMIT 1;
+INSERT INTO ingredients (name, unit, stock_quantity, min_quantity, price_per_unit, category) SELECT 'Чеснок', 'kg', 0, 0, 0, 'Ингредиенты' WHERE NOT EXISTS (SELECT 1 FROM ingredients WHERE name ILIKE '%Чеснок%');
+INSERT INTO recipe_items (menu_item_id, ingredient_id, quantity) SELECT m.id, i.id, 0.002 FROM menu_items m JOIN menu_categories c ON m.category_id = c.id, ingredients i WHERE m.name = 'Харчо по грузински' AND c.name = '1 Блюда' AND i.name ILIKE '%Чеснок%' LIMIT 1;
+INSERT INTO ingredients (name, unit, stock_quantity, min_quantity, price_per_unit, category) SELECT 'Зелень', 'kg', 0, 0, 0, 'Ингредиенты' WHERE NOT EXISTS (SELECT 1 FROM ingredients WHERE name ILIKE '%Зелень%');
+INSERT INTO recipe_items (menu_item_id, ingredient_id, quantity) SELECT m.id, i.id, 0.005 FROM menu_items m JOIN menu_categories c ON m.category_id = c.id, ingredients i WHERE m.name = 'Харчо по грузински' AND c.name = '1 Блюда' AND i.name ILIKE '%Зелень%' LIMIT 1;
+
+-- Шорпо из говядина
+INSERT INTO menu_items (category_id, name, price) SELECT id, 'Шорпо из говядина', 0 FROM menu_categories WHERE name = '1 Блюда';
+INSERT INTO ingredients (name, unit, stock_quantity, min_quantity, price_per_unit, category) SELECT 'Морковь красный', 'kg', 0, 0, 0, 'Ингредиенты' WHERE NOT EXISTS (SELECT 1 FROM ingredients WHERE name ILIKE '%Морковь красный%');
+INSERT INTO recipe_items (menu_item_id, ingredient_id, quantity) SELECT m.id, i.id, 0.025 FROM menu_items m JOIN menu_categories c ON m.category_id = c.id, ingredients i WHERE m.name = 'Шорпо из говядина' AND c.name = '1 Блюда' AND i.name ILIKE '%Морковь красный%' LIMIT 1;
+INSERT INTO ingredients (name, unit, stock_quantity, min_quantity, price_per_unit, category) SELECT 'Картошка', 'kg', 0, 0, 0, 'Ингредиенты' WHERE NOT EXISTS (SELECT 1 FROM ingredients WHERE name ILIKE '%Картошка%');
+INSERT INTO recipe_items (menu_item_id, ingredient_id, quantity) SELECT m.id, i.id, 0.1 FROM menu_items m JOIN menu_categories c ON m.category_id = c.id, ingredients i WHERE m.name = 'Шорпо из говядина' AND c.name = '1 Блюда' AND i.name ILIKE '%Картошка%' LIMIT 1;
+INSERT INTO ingredients (name, unit, stock_quantity, min_quantity, price_per_unit, category) SELECT 'Мясо говядина Быкын', 'kg', 0, 0, 0, 'Ингредиенты' WHERE NOT EXISTS (SELECT 1 FROM ingredients WHERE name ILIKE '%Мясо говядина Быкын%');
+INSERT INTO recipe_items (menu_item_id, ingredient_id, quantity) SELECT m.id, i.id, 0.15 FROM menu_items m JOIN menu_categories c ON m.category_id = c.id, ingredients i WHERE m.name = 'Шорпо из говядина' AND c.name = '1 Блюда' AND i.name ILIKE '%Мясо говядина Быкын%' LIMIT 1;
+INSERT INTO ingredients (name, unit, stock_quantity, min_quantity, price_per_unit, category) SELECT 'Чеснок', 'kg', 0, 0, 0, 'Ингредиенты' WHERE NOT EXISTS (SELECT 1 FROM ingredients WHERE name ILIKE '%Чеснок%');
+INSERT INTO recipe_items (menu_item_id, ingredient_id, quantity) SELECT m.id, i.id, 0.002 FROM menu_items m JOIN menu_categories c ON m.category_id = c.id, ingredients i WHERE m.name = 'Шорпо из говядина' AND c.name = '1 Блюда' AND i.name ILIKE '%Чеснок%' LIMIT 1;
+INSERT INTO ingredients (name, unit, stock_quantity, min_quantity, price_per_unit, category) SELECT 'Зелень', 'kg', 0, 0, 0, 'Ингредиенты' WHERE NOT EXISTS (SELECT 1 FROM ingredients WHERE name ILIKE '%Зелень%');
+INSERT INTO recipe_items (menu_item_id, ingredient_id, quantity) SELECT m.id, i.id, 0.002 FROM menu_items m JOIN menu_categories c ON m.category_id = c.id, ingredients i WHERE m.name = 'Шорпо из говядина' AND c.name = '1 Блюда' AND i.name ILIKE '%Зелень%' LIMIT 1;
+
+-- Бодоно шорпо
+INSERT INTO menu_items (category_id, name, price) SELECT id, 'Бодоно шорпо', 380 FROM menu_categories WHERE name = '1 Блюда';
+INSERT INTO ingredients (name, unit, stock_quantity, min_quantity, price_per_unit, category) SELECT 'Бодоно мяса', 'kg', 0, 0, 0, 'Ингредиенты' WHERE NOT EXISTS (SELECT 1 FROM ingredients WHERE name ILIKE '%Бодоно мяса%');
+INSERT INTO recipe_items (menu_item_id, ingredient_id, quantity) SELECT m.id, i.id, 0.2 FROM menu_items m JOIN menu_categories c ON m.category_id = c.id, ingredients i WHERE m.name = 'Бодоно шорпо' AND c.name = '1 Блюда' AND i.name ILIKE '%Бодоно мяса%' LIMIT 1;
+INSERT INTO ingredients (name, unit, stock_quantity, min_quantity, price_per_unit, category) SELECT 'Картошка', 'kg', 0, 0, 0, 'Ингредиенты' WHERE NOT EXISTS (SELECT 1 FROM ingredients WHERE name ILIKE '%Картошка%');
+INSERT INTO recipe_items (menu_item_id, ingredient_id, quantity) SELECT m.id, i.id, 0.081 FROM menu_items m JOIN menu_categories c ON m.category_id = c.id, ingredients i WHERE m.name = 'Бодоно шорпо' AND c.name = '1 Блюда' AND i.name ILIKE '%Картошка%' LIMIT 1;
+INSERT INTO ingredients (name, unit, stock_quantity, min_quantity, price_per_unit, category) SELECT 'Зелень', 'kg', 0, 0, 0, 'Ингредиенты' WHERE NOT EXISTS (SELECT 1 FROM ingredients WHERE name ILIKE '%Зелень%');
+INSERT INTO recipe_items (menu_item_id, ingredient_id, quantity) SELECT m.id, i.id, 0.002 FROM menu_items m JOIN menu_categories c ON m.category_id = c.id, ingredients i WHERE m.name = 'Бодоно шорпо' AND c.name = '1 Блюда' AND i.name ILIKE '%Зелень%' LIMIT 1;
+INSERT INTO ingredients (name, unit, stock_quantity, min_quantity, price_per_unit, category) SELECT 'Морковь красный', 'kg', 0, 0, 0, 'Ингредиенты' WHERE NOT EXISTS (SELECT 1 FROM ingredients WHERE name ILIKE '%Морковь красный%');
+INSERT INTO recipe_items (menu_item_id, ingredient_id, quantity) SELECT m.id, i.id, 0.025 FROM menu_items m JOIN menu_categories c ON m.category_id = c.id, ingredients i WHERE m.name = 'Бодоно шорпо' AND c.name = '1 Блюда' AND i.name ILIKE '%Морковь красный%' LIMIT 1;
+INSERT INTO ingredients (name, unit, stock_quantity, min_quantity, price_per_unit, category) SELECT 'Масло растительная', 'litr', 0, 0, 0, 'Ингредиенты' WHERE NOT EXISTS (SELECT 1 FROM ingredients WHERE name ILIKE '%Масло растительная%');
+INSERT INTO recipe_items (menu_item_id, ingredient_id, quantity) SELECT m.id, i.id, 0.04 FROM menu_items m JOIN menu_categories c ON m.category_id = c.id, ingredients i WHERE m.name = 'Бодоно шорпо' AND c.name = '1 Блюда' AND i.name ILIKE '%Масло растительная%' LIMIT 1;
+INSERT INTO ingredients (name, unit, stock_quantity, min_quantity, price_per_unit, category) SELECT 'Котлет П/Ф', 'kg', 0, 0, 0, 'Ингредиенты' WHERE NOT EXISTS (SELECT 1 FROM ingredients WHERE name ILIKE '%Котлет П/Ф%');
+INSERT INTO recipe_items (menu_item_id, ingredient_id, quantity) SELECT m.id, i.id, 0.02 FROM menu_items m JOIN menu_categories c ON m.category_id = c.id, ingredients i WHERE m.name = 'Бодоно шорпо' AND c.name = '1 Блюда' AND i.name ILIKE '%Котлет П/Ф%' LIMIT 1;
+INSERT INTO ingredients (name, unit, stock_quantity, min_quantity, price_per_unit, category) SELECT 'Перец болгарский зел.', 'kg', 0, 0, 0, 'Ингредиенты' WHERE NOT EXISTS (SELECT 1 FROM ingredients WHERE name ILIKE '%Перец болгарский зел.%');
+INSERT INTO recipe_items (menu_item_id, ingredient_id, quantity) SELECT m.id, i.id, 0.018 FROM menu_items m JOIN menu_categories c ON m.category_id = c.id, ingredients i WHERE m.name = 'Бодоно шорпо' AND c.name = '1 Блюда' AND i.name ILIKE '%Перец болгарский зел.%' LIMIT 1;
+
+-- Рамен
+INSERT INTO menu_items (category_id, name, price) SELECT id, 'Рамен', 117.74000000000001 FROM menu_categories WHERE name = '1 Блюда';
+INSERT INTO ingredients (name, unit, stock_quantity, min_quantity, price_per_unit, category) SELECT 'Рамен', 'dona', 0, 0, 0, 'Ингредиенты' WHERE NOT EXISTS (SELECT 1 FROM ingredients WHERE name ILIKE '%Рамен%');
+INSERT INTO recipe_items (menu_item_id, ingredient_id, quantity) SELECT m.id, i.id, 1.0 FROM menu_items m JOIN menu_categories c ON m.category_id = c.id, ingredients i WHERE m.name = 'Рамен' AND c.name = '1 Блюда' AND i.name ILIKE '%Рамен%' LIMIT 1;
+INSERT INTO ingredients (name, unit, stock_quantity, min_quantity, price_per_unit, category) SELECT 'Яйцо', 'dona', 0, 0, 0, 'Ингредиенты' WHERE NOT EXISTS (SELECT 1 FROM ingredients WHERE name ILIKE '%Яйцо%');
+INSERT INTO recipe_items (menu_item_id, ingredient_id, quantity) SELECT m.id, i.id, 1.0 FROM menu_items m JOIN menu_categories c ON m.category_id = c.id, ingredients i WHERE m.name = 'Рамен' AND c.name = '1 Блюда' AND i.name ILIKE '%Яйцо%' LIMIT 1;
+INSERT INTO ingredients (name, unit, stock_quantity, min_quantity, price_per_unit, category) SELECT 'Помидор', 'kg', 0, 0, 0, 'Ингредиенты' WHERE NOT EXISTS (SELECT 1 FROM ingredients WHERE name ILIKE '%Помидор%');
+INSERT INTO recipe_items (menu_item_id, ingredient_id, quantity) SELECT m.id, i.id, 0.02 FROM menu_items m JOIN menu_categories c ON m.category_id = c.id, ingredients i WHERE m.name = 'Рамен' AND c.name = '1 Блюда' AND i.name ILIKE '%Помидор%' LIMIT 1;
+INSERT INTO ingredients (name, unit, stock_quantity, min_quantity, price_per_unit, category) SELECT 'Шампиньен', 'kg', 0, 0, 0, 'Ингредиенты' WHERE NOT EXISTS (SELECT 1 FROM ingredients WHERE name ILIKE '%Шампиньен%');
+INSERT INTO recipe_items (menu_item_id, ingredient_id, quantity) SELECT m.id, i.id, 0.02 FROM menu_items m JOIN menu_categories c ON m.category_id = c.id, ingredients i WHERE m.name = 'Рамен' AND c.name = '1 Блюда' AND i.name ILIKE '%Шампиньен%' LIMIT 1;
+INSERT INTO ingredients (name, unit, stock_quantity, min_quantity, price_per_unit, category) SELECT 'Куриный Филе', 'kg', 0, 0, 0, 'Ингредиенты' WHERE NOT EXISTS (SELECT 1 FROM ingredients WHERE name ILIKE '%Куриный Филе%');
+INSERT INTO recipe_items (menu_item_id, ingredient_id, quantity) SELECT m.id, i.id, 0.05 FROM menu_items m JOIN menu_categories c ON m.category_id = c.id, ingredients i WHERE m.name = 'Рамен' AND c.name = '1 Блюда' AND i.name ILIKE '%Куриный Филе%' LIMIT 1;
+INSERT INTO ingredients (name, unit, stock_quantity, min_quantity, price_per_unit, category) SELECT 'Кунжут', 'kg', 0, 0, 0, 'Ингредиенты' WHERE NOT EXISTS (SELECT 1 FROM ingredients WHERE name ILIKE '%Кунжут%');
+INSERT INTO recipe_items (menu_item_id, ingredient_id, quantity) SELECT m.id, i.id, 0.002 FROM menu_items m JOIN menu_categories c ON m.category_id = c.id, ingredients i WHERE m.name = 'Рамен' AND c.name = '1 Блюда' AND i.name ILIKE '%Кунжут%' LIMIT 1;
+INSERT INTO ingredients (name, unit, stock_quantity, min_quantity, price_per_unit, category) SELECT 'Лук зел', 'kg', 0, 0, 0, 'Ингредиенты' WHERE NOT EXISTS (SELECT 1 FROM ingredients WHERE name ILIKE '%Лук зел%');
+INSERT INTO recipe_items (menu_item_id, ingredient_id, quantity) SELECT m.id, i.id, 0.005 FROM menu_items m JOIN menu_categories c ON m.category_id = c.id, ingredients i WHERE m.name = 'Рамен' AND c.name = '1 Блюда' AND i.name ILIKE '%Лук зел%' LIMIT 1;

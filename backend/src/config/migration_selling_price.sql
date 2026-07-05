@@ -1,0 +1,1 @@
+ALTER TABLE ingredients ADD COLUMN IF NOT EXISTS selling_price NUMERIC(10,2) DEFAULT 0;

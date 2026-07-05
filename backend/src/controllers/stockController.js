@@ -1,0 +1,435 @@
+const pool = require('../config/db');
+
+// Barcha mahsulotlar (sklad) — sklad va kategoriya bo'yicha filtr
+const getIngredients = async (req, res) => {
+  try {
+    const { category, warehouse_id } = req.query;
+    const conditions = [];
+    const params = [];
+    if (warehouse_id) {
+      params.push(warehouse_id);
+      conditions.push(`warehouse_id = $${params.length}`);
+    }
+    if (category) {
+      params.push(category);
+      conditions.push(`category = $${params.length}`);
+    }
+    let query = `SELECT * FROM ingredients`;
+    if (conditions.length > 0) {
+      query += ` WHERE ` + conditions.join(' AND ');
+    }
+    query += ` ORDER BY name`;
+    const result = await pool.query(query, params);
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+};
+
+// Mahsulot qo'shish (tanlangan skladga)
+const createIngredient = async (req, res) => {
+  try {
+    const { name, unit, stock_quantity, min_quantity, price_per_unit, category, warehouse_id } = req.body;
+    const result = await pool.query(
+      `INSERT INTO ingredients (name, unit, stock_quantity, min_quantity, price_per_unit, category, warehouse_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
+      [name, unit, stock_quantity || 0, min_quantity || 0, price_per_unit || 0, category || null, warehouse_id || null]
+    );
+    res.status(201).json(result.rows[0]);
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+};
+
+// Mahsulot keldi (kirim)
+const addIncoming = async (req, res) => {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const { ingredient_id, quantity, price_per_unit, selling_price, note } = req.body;
+    const total_amount = quantity * price_per_unit;
+    const method = req.body.method === 'card' ? 'card' : 'cash';
+    // Pul manbasi: Kassadan (default) yoki boshqa joydan. Boshqa bo'lsa Kassadan yechilmaydi.
+    const fromKassa = req.body.from_kassa !== false && req.body.from_kassa !== 'false';
+    const sourceText = fromKassa ? 'kassa' : ((req.body.source || '').toString().trim().slice(0, 120) || 'boshqa');
+
+    const inc = await client.query(
+      `INSERT INTO stock_incoming (ingredient_id, quantity, price_per_unit, total_amount, note, method, source)
+       VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`,
+      [ingredient_id, quantity, price_per_unit, total_amount, note, method, sourceText]
+    );
+
+    // Faqat Kassadan to'langanda va summa > 0 bo'lsa Kassadan chiqim qilamiz
+    if (fromKassa && total_amount > 0) {
+      const ingRow = await client.query(`SELECT name FROM ingredients WHERE id = $1`, [ingredient_id]);
+      const ingName = (ingRow.rows[0] && ingRow.rows[0].name) ? ingRow.rows[0].name : 'Mahsulot';
+      const txNote = note && note.toString().trim() ? `${ingName} — ${note}` : `${ingName} (sklad kirim)`;
+      await client.query(
+        `INSERT INTO cash_transactions (kind, method, amount, source, ref_id, note)
+         VALUES ('expense', $1, $2, 'stock', $3, $4)`,
+        [method, total_amount, inc.rows[0].id, txNote]
+      );
+    }
+
+    if (selling_price !== undefined && selling_price !== null) {
+      await client.query(
+        `UPDATE ingredients
+         SET stock_quantity = stock_quantity + $1, price_per_unit = $2, selling_price = $3
+         WHERE id = $4`,
+        [quantity, price_per_unit, selling_price, ingredient_id]
+      );
+    } else {
+      await client.query(
+        `UPDATE ingredients
+         SET stock_quantity = stock_quantity + $1, price_per_unit = $2
+         WHERE id = $3`,
+        [quantity, price_per_unit, ingredient_id]
+      );
+    }
+
+    await client.query('COMMIT');
+    res.status(201).json({ message: 'Mahsulot qabul qilindi!', total_amount });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    res.status(500).json({ message: err.message });
+  } finally {
+    client.release();
+  }
+};
+
+// Kirim tarixi
+const getIncomingHistory = async (req, res) => {
+  try {
+    const { ingredient_id } = req.query;
+    let query = `
+      SELECT si.*, i.name as ingredient_name, i.unit
+      FROM stock_incoming si
+      JOIN ingredients i ON si.ingredient_id = i.id
+    `;
+    const params = [];
+    if (ingredient_id) {
+      query += ` WHERE si.ingredient_id = $1`;
+      params.push(ingredient_id);
+    }
+    query += ` ORDER BY si.created_at DESC LIMIT 50`;
+    const result = await pool.query(query, params);
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+};
+
+// Kam qolgan mahsulotlar
+const getLowStock = async (req, res) => {
+  try {
+    const result = await pool.query(
+      `SELECT * FROM ingredients
+       WHERE min_quantity > 0 AND stock_quantity <= min_quantity
+       ORDER BY stock_quantity ASC`
+    );
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+};
+
+// Sotish narxini yangilash
+const updateSellingPrice = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { selling_price } = req.body;
+    const result = await pool.query(
+      `UPDATE ingredients SET selling_price = $1 WHERE id = $2 RETURNING *`,
+      [selling_price, id]
+    );
+    res.json(result.rows[0]);
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+};
+
+// Mahsulotni TAHRIRLASH — nom, birlik, min, kirim narxi, sotish narxi, qoldiq.
+// SABAB majburiy. Har o'zgarish stock_change_log ga yoziladi (kim/nima/nega).
+const editIngredient = async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const { id } = req.params;
+    const reason = (req.body.reason || '').toString().trim();
+    if (!reason) {
+      return res.status(400).json({ message: 'Sabab yozish shart!' });
+    }
+    const { name, unit, min_quantity, price_per_unit, selling_price, stock_quantity } = req.body;
+
+    await client.query('BEGIN');
+    const cur = await client.query('SELECT * FROM ingredients WHERE id = $1', [id]);
+    if (cur.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ message: 'Mahsulot topilmadi!' });
+    }
+    const old = cur.rows[0];
+
+    // Berilmagan (undefined/'') maydonlar eski qiymatda qoladi
+    const has = (v) => v !== undefined && v !== null && v.toString().trim() !== '';
+    const nName = has(name) ? name.toString().trim() : old.name;
+    const nUnit = has(unit) ? unit.toString().trim() : old.unit;
+    const nMin = has(min_quantity) ? parseFloat(min_quantity) : parseFloat(old.min_quantity || 0);
+    const nPrice = has(price_per_unit) ? parseFloat(price_per_unit) : parseFloat(old.price_per_unit || 0);
+    const nSell = has(selling_price) ? parseFloat(selling_price) : parseFloat(old.selling_price || 0);
+    const nStock = has(stock_quantity) ? parseFloat(stock_quantity) : parseFloat(old.stock_quantity || 0);
+
+    const num = (v) => parseFloat(v || 0);
+    const diff = (a, b) => Math.abs(num(a) - num(b)) > 1e-9;
+    const parts = [];
+    if (nName !== old.name) parts.push(`Nomi: "${old.name}" -> "${nName}"`);
+    if (nUnit !== old.unit) parts.push(`Birlik: "${old.unit}" -> "${nUnit}"`);
+    if (diff(nMin, old.min_quantity)) parts.push(`Min: ${num(old.min_quantity)} -> ${nMin}`);
+    if (diff(nPrice, old.price_per_unit)) parts.push(`Kirim narxi: ${num(old.price_per_unit)} -> ${nPrice}`);
+    if (diff(nSell, old.selling_price)) parts.push(`Sotish narxi: ${num(old.selling_price)} -> ${nSell}`);
+    if (diff(nStock, old.stock_quantity)) parts.push(`Qoldiq: ${num(old.stock_quantity)} -> ${nStock}`);
+
+    if (parts.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ message: 'Hech narsa o\'zgarmadi' });
+    }
+
+    await client.query(
+      `UPDATE ingredients
+       SET name = $1, unit = $2, min_quantity = $3, price_per_unit = $4,
+           selling_price = $5, stock_quantity = $6
+       WHERE id = $7`,
+      [nName, nUnit, nMin, nPrice, nSell, nStock, id]
+    );
+
+    let userName = null;
+    if (req.user && req.user.id) {
+      const u = await client.query('SELECT full_name FROM users WHERE id = $1', [req.user.id]);
+      userName = u.rows[0] ? u.rows[0].full_name : null;
+    }
+    await client.query(
+      `INSERT INTO stock_change_log (ingredient_id, user_id, user_name, changes, reason)
+       VALUES ($1, $2, $3, $4, $5)`,
+      [id, req.user ? req.user.id : null, userName, parts.join('; '), reason]
+    );
+
+    await client.query('COMMIT');
+    res.json({ message: 'O\'zgartirildi!', changes: parts.join('; ') });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    res.status(500).json({ message: err.message });
+  } finally {
+    client.release();
+  }
+};
+
+// P/F TAYYORLASH (ishlab chiqarish): oshpaz "N birlik tayyorladim" deydi ->
+// P/F qoldig'i +N, retseptidagi xom masaliqlar -N*brutto (Kassaga tegilmaydi).
+// body: { ingredient_id (P/F sklad masaligi), quantity }
+const producePf = async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const ingId = parseInt(req.body.ingredient_id);
+    const qty = parseFloat(req.body.quantity);
+    if (isNaN(ingId) || !(qty > 0)) {
+      return res.status(400).json({ message: 'ingredient_id va musbat quantity kerak' });
+    }
+    await client.query('BEGIN');
+    const mi = await client.query(
+      `SELECT id FROM menu_items WHERE type = 'pf' AND ingredient_id = $1 AND is_active = true LIMIT 1`,
+      [ingId]
+    );
+    if (!mi.rows.length) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ message: 'Bu masaliq P/F emas (retsepti yo\'q)' });
+    }
+    const rec = await client.query(
+      `SELECT ingredient_id, quantity FROM recipe_items WHERE menu_item_id = $1`,
+      [mi.rows[0].id]
+    );
+    if (!rec.rows.length) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ message: 'P/F retsepti bo\'sh — avval retseptini kiriting' });
+    }
+    // P/F +N
+    await client.query(`UPDATE ingredients SET stock_quantity = stock_quantity + $1 WHERE id = $2`, [qty, ingId]);
+    // Komponentlar -N*brutto
+    for (const r of rec.rows) {
+      await client.query(
+        `UPDATE ingredients SET stock_quantity = stock_quantity - $1 WHERE id = $2`,
+        [qty * parseFloat(r.quantity), r.ingredient_id]
+      );
+    }
+    // Tarix (kirim jurnalida ko'rinadi, kassaga YOZILMAYDI)
+    const c = await client.query(`SELECT COALESCE(price_per_unit,0) AS p FROM ingredients WHERE id = $1`, [ingId]);
+    const unitCost = parseFloat(c.rows[0].p) || 0;
+    await client.query(
+      `INSERT INTO stock_incoming (ingredient_id, quantity, price_per_unit, total_amount, note, method, source)
+       VALUES ($1, $2, $3, $4, 'P/F tayyorlash', 'cash', 'pf_production')`,
+      [ingId, qty, unitCost, qty * unitCost]
+    );
+    await client.query('COMMIT');
+    res.json({ ok: true, produced: qty });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    res.status(500).json({ message: err.message });
+  } finally {
+    client.release();
+  }
+};
+
+// Mahsulot o'zgarishlar tarixi (audit)
+const getStockHistory = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const result = await pool.query(
+      `SELECT id, changes, reason, user_name, created_at
+       FROM stock_change_log
+       WHERE ingredient_id = $1
+       ORDER BY created_at DESC
+       LIMIT 50`,
+      [id]
+    );
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+};
+
+// Mahsulotni o'chirish (faqat ombor bo'sh bo'lsa)
+const deleteIngredient = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const check = await pool.query(
+      `SELECT stock_quantity FROM ingredients WHERE id = $1`,
+      [id]
+    );
+    if (check.rows.length === 0) {
+      return res.status(404).json({ message: 'Mahsulot topilmadi!' });
+    }
+    const qty = parseFloat(check.rows[0].stock_quantity);
+    if (qty > 0) {
+      return res.status(400).json({ message: `Omborda ${qty} birlik qolgan. O'chirish uchun avval sarflang!` });
+    }
+    await pool.query(`DELETE FROM ingredients WHERE id = $1`, [id]);
+    res.json({ message: 'Mahsulot o\'chirildi!' });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+};
+
+// ===== SKLADLAR (warehouses) =====
+
+// Skladlar ro'yxati
+const getWarehouses = async (req, res) => {
+  try {
+    const result = await pool.query(`SELECT * FROM warehouses ORDER BY id`);
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+};
+
+// Yangi sklad
+const createWarehouse = async (req, res) => {
+  try {
+    const { name } = req.body;
+    if (!name || !name.trim()) {
+      return res.status(400).json({ message: 'Sklad nomi kiritilmadi!' });
+    }
+    const result = await pool.query(
+      `INSERT INTO warehouses (name) VALUES ($1) RETURNING *`,
+      [name.trim()]
+    );
+    res.status(201).json(result.rows[0]);
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+};
+
+// Sklad nomini tahrirlash
+const updateWarehouse = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { name } = req.body;
+    if (!name || !name.trim()) {
+      return res.status(400).json({ message: 'Sklad nomi kiritilmadi!' });
+    }
+    const result = await pool.query(
+      `UPDATE warehouses SET name = $1 WHERE id = $2 RETURNING *`,
+      [name.trim(), id]
+    );
+    if (result.rows.length === 0) {
+      return res.status(404).json({ message: 'Sklad topilmadi!' });
+    }
+    res.json(result.rows[0]);
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+};
+
+// Sklad o'chirish (faqat ichida mahsulot yo'q bo'lsa)
+const deleteWarehouse = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const check = await pool.query(
+      `SELECT COUNT(*)::int AS cnt FROM ingredients WHERE warehouse_id = $1`,
+      [id]
+    );
+    if (check.rows[0].cnt > 0) {
+      return res.status(400).json({ message: 'Sklad bo\'sh emas! Avval mahsulotlarni o\'chiring yoki ko\'chiring.' });
+    }
+    await pool.query(`DELETE FROM warehouses WHERE id = $1`, [id]);
+    res.json({ message: 'Sklad o\'chirildi!' });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+};
+
+// Retsept bo'yicha ingredientlarni skladga biriktirish
+// body: { warehouse_id, category_name?, name_like? }
+const assignFromRecipe = async (req, res) => {
+  try {
+    const { warehouse_id, category_name, name_like } = req.body;
+    if (!warehouse_id) {
+      return res.status(400).json({ message: 'warehouse_id kerak!' });
+    }
+    const conditions = [];
+    const params = [warehouse_id];
+    if (category_name && category_name.trim()) {
+      params.push(`%${category_name.trim()}%`);
+      conditions.push(`mc.name ILIKE $${params.length}`);
+    }
+    if (name_like && name_like.trim()) {
+      params.push(`%${name_like.trim()}%`);
+      conditions.push(`mi.name ILIKE $${params.length}`);
+    }
+    if (conditions.length === 0) {
+      return res.status(400).json({ message: 'Kamida kategoriya nomi yoki taom nomi kiriting!' });
+    }
+
+    const result = await pool.query(
+      `UPDATE ingredients SET warehouse_id = $1
+       WHERE id IN (
+         SELECT DISTINCT ri.ingredient_id
+         FROM recipe_items ri
+         JOIN menu_items mi ON ri.menu_item_id = mi.id
+         LEFT JOIN menu_categories mc ON mi.category_id = mc.id
+         WHERE ${conditions.join(' OR ')}
+       )
+       RETURNING id`,
+      params
+    );
+
+    res.json({
+      message: `${result.rowCount} ta ingredient biriktirildi`,
+      count: result.rowCount,
+    });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+};
+
+module.exports = {
+  getIngredients, createIngredient, addIncoming, getIncomingHistory, getLowStock, updateSellingPrice, deleteIngredient,
+  editIngredient, getStockHistory, producePf,
+  getWarehouses, createWarehouse, updateWarehouse, deleteWarehouse, assignFromRecipe
+};

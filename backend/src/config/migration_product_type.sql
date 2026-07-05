@@ -1,0 +1,2 @@
+ALTER TABLE menu_items ADD COLUMN IF NOT EXISTS type VARCHAR(20) DEFAULT 'recipe';
+ALTER TABLE menu_items ADD COLUMN IF NOT EXISTS ingredient_id INTEGER REFERENCES ingredients(id);
