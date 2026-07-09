@@ -17,4 +17,11 @@ pool.connect((err) => {
   }
 });
 
+// MUHIM: idle-mijoz xatosi (DB restart, Tailscale/tunnel uzilishi, idle-timeout)
+// butun backendni YIQITMASIN. node-pg Pool 'error' hodisasini chiqaradi; listener
+// bo'lmasa Node uni unhandled deb jarayonni o'ldiradi (barcha kassalar bir vaqtda tushardi).
+pool.on('error', (err) => {
+  console.error('[pg] idle mijoz xatosi (backend tirik qoladi):', err.message);
+});
+
 module.exports = pool;

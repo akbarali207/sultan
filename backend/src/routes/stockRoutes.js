@@ -14,6 +14,7 @@ const {
   getStockHistory,
   producePf,
   deleteIngredient,
+  mergeIngredient,
   getWarehouses,
   createWarehouse,
   updateWarehouse,
@@ -36,6 +37,7 @@ router.get('/incoming', authMiddleware, adminOnly, getIncomingHistory);
 router.get('/low', authMiddleware, adminOnly, getLowStock);
 router.put('/:id/edit', authMiddleware, adminOnly, editIngredient);   // tahrirlash (sabab majburiy)
 router.get('/:id/history', authMiddleware, adminOnly, getStockHistory); // o'zgarishlar tarixi
+router.post('/:id/merge', authMiddleware, adminOnly, mergeIngredient); // dublikatni target ga birlashtirish
 router.put('/:id', authMiddleware, adminOnly, updateSellingPrice);
 router.delete('/:id', authMiddleware, adminOnly, deleteIngredient);
 

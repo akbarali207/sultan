@@ -288,7 +288,9 @@ class RecipeEditorPage extends StatefulWidget {
 class _RecipeEditorPageState extends State<RecipeEditorPage> {
   List<dynamic> _lines = [];
   List<dynamic> _warehouses = [];
+  List<dynamic> _allIngredients = []; // avto-qidiruv uchun mavjud masaliqlar
   bool _loading = true;
+  double? _yieldOverride; // partiya chiqishi qo'lda tahrirlangach — darhol ko'rsatish uchun
   int get _itemId => widget.menuItem['id'] as int;
 
   @override
@@ -302,10 +304,17 @@ class _RecipeEditorPageState extends State<RecipeEditorPage> {
     try {
       final data = await ApiService.get('/menu/recipe/$_itemId');
       final whs = await ApiService.get(AppConstants.warehouses);
+      // Mavjud masaliqlar (avto-qidiruv uchun) — xato bo'lsa ham retsept ochilaveradi
+      List<dynamic> ings = [];
+      try {
+        final r = await ApiService.get(AppConstants.ingredients);
+        ings = r is List ? r : [];
+      } catch (_) {}
       if (!mounted) return;
       setState(() {
         _lines = data is List ? data : [];
         _warehouses = whs is List ? whs : [];
+        _allIngredients = ings;
         _loading = false;
       });
     } catch (_) {
@@ -329,6 +338,85 @@ class _RecipeEditorPageState extends State<RecipeEditorPage> {
   double _cost(dynamic r) => _d(r['quantity']) * _d(r['price_per_unit']);
   String _w(double v) => v.toStringAsFixed(3);
 
+  // PARTIYA CHIQISHI (ВЫХОД, kg) — ТТК da QO'LDA beriladi (masalan Соус Цезарь П/Ф = 0.840 кг),
+  // ingredientlar yig'indisidan hisoblanmaydi (dona/litr kg bilan aralashadi — 8 yumurtcha ≠ 8 kg).
+  // Manba: (1) backend maydoni menu_items.yield_kg; (2) bo'lmasa — quyidagi ТТК jadvali (nom bo'yicha).
+  static const Map<String, double> _ttkYield = {
+    'соус цезарь п/ф': 0.840,
+    'соус пицца п/ф': 6.7,
+    'катлет фарш п/ф': 5.65,
+    'котлет фарш п/ф': 5.65,
+    'фарш хинкали п/ф': 2.3,
+    'зажарка для чучбара ттк': 4.0,
+    'зажарка ттк': 4.0,
+  };
+  String _norm(String s) => s.toLowerCase().replaceAll(RegExp(r'\s+'), ' ').trim();
+  // Retseptning partiya chiqishi (kg) yoki null (porsiyalik taom).
+  double? _batchYieldKg() {
+    // Qo'lda tahrirlangan qiymat (saqlangach) — birinchi navbatda
+    if (_yieldOverride != null && _yieldOverride! > 0) return _yieldOverride;
+    final y = widget.menuItem['yield_kg'];
+    final yd = y == null ? null : double.tryParse(y.toString());
+    if (yd != null && yd > 0) return yd;
+    return _ttkYield[_norm(widget.menuItem['name']?.toString() ?? '')];
+  }
+
+  // Partiya chiqishini (ВЫХОД, kg) qo'lda o'rnatish — PUT /menu/items/:id/yield
+  Future<void> _editYield() async {
+    final current = _batchYieldKg();
+    final ctrl = TextEditingController(
+        text: current != null ? current.toStringAsFixed(3) : '');
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppTheme.card,
+        title: Text(tr('Chiqish (partiya)'), style: TextStyle(color: AppTheme.text, fontSize: 16)),
+        content: TextField(
+          controller: ctrl,
+          autofocus: true,
+          keyboardType: const TextInputType.numberWithOptions(decimal: true),
+          style: TextStyle(color: AppTheme.text),
+          decoration: InputDecoration(
+            labelText: '${tr('Chiqish (partiya)')} (кг)',
+            labelStyle: TextStyle(color: AppTheme.textSoft),
+            enabledBorder: OutlineInputBorder(borderSide: BorderSide(color: AppTheme.border)),
+            focusedBorder: OutlineInputBorder(borderSide: BorderSide(color: AppTheme.accent)),
+          ),
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: Text(tr('Bekor'), style: TextStyle(color: AppTheme.textSoft))),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(backgroundColor: AppTheme.accent),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: Text(tr('Saqlash'), style: TextStyle(color: AppTheme.onAccent)),
+          ),
+        ],
+      ),
+    );
+    if (ok != true) return;
+    final parsed = double.tryParse(ctrl.text.replaceAll(',', '.').trim());
+    if (parsed == null || parsed <= 0) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text(tr('Noto\'g\'ri qiymat')), backgroundColor: Colors.red));
+      }
+      return;
+    }
+    try {
+      await ApiService.put('/menu/items/$_itemId/yield', {'yield_kg': parsed});
+      if (!mounted) return;
+      setState(() => _yieldOverride = parsed); // darhol ko'rinsin
+      _load();
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('${tr('Xato')}: $e'), backgroundColor: Colors.red));
+      }
+    }
+  }
+
   Future<void> _addOrEdit({Map? line}) async {
     final res = await showDialog<bool>(
         context: context,
@@ -336,6 +424,7 @@ class _RecipeEditorPageState extends State<RecipeEditorPage> {
               menuItemId: _itemId,
               line: line,
               warehouses: _warehouses,
+              allIngredients: _allIngredients,
               defaultWarehouseId: _defaultWh,
               // P/F o'z retseptiga o'zini qo'sha olmasin
               excludeIngredientId: widget.menuItem['type']?.toString() == 'pf'
@@ -376,6 +465,7 @@ class _RecipeEditorPageState extends State<RecipeEditorPage> {
       totN += _netto(r);
       totC += _cost(r);
     }
+    final batchKg = _batchYieldKg(); // ТТК partiya chiqishi (kg) yoki null
     return Scaffold(
       backgroundColor: AppTheme.bg,
       appBar: AppBar(
@@ -471,7 +561,7 @@ class _RecipeEditorPageState extends State<RecipeEditorPage> {
                         ),
                       );
                     }),
-                    // JAMI
+                    // JAMI (ustunlar yig'indisi — brutto/netto aralash birlik, faqat ma'lumot uchun)
                     Container(
                       color: AppTheme.accentSoft,
                       padding: const EdgeInsets.symmetric(vertical: 11, horizontal: 6),
@@ -487,6 +577,28 @@ class _RecipeEditorPageState extends State<RecipeEditorPage> {
                         const SizedBox(width: 34),
                       ]),
                     ),
+                    // KONVENSIYA (per-unit): retsept 1 kg chiqishga kiritiladi -> tannarx/кг = jami tannarx
+                    // TO'G'RIDAN-TO'G'RI (yield_kg ga bo'linmaydi; syncPfCost bilan mos). "Chiqish" — faqat ma'lumot.
+                    if (batchKg != null && batchKg > 0)
+                      InkWell(
+                        onTap: _editYield,
+                        child: Container(
+                          color: AppTheme.card,
+                          padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 10),
+                          child: Row(children: [
+                            Icon(Icons.scale, size: 17, color: AppTheme.accent),
+                            const SizedBox(width: 6),
+                            Expanded(
+                              child: Text('${tr('Chiqish (partiya)')}: ${batchKg.toStringAsFixed(3)} кг',
+                                  style: TextStyle(color: AppTheme.text, fontWeight: FontWeight.bold, fontSize: 13)),
+                            ),
+                            Icon(Icons.edit, size: 15, color: AppTheme.textSoft),
+                            const SizedBox(width: 8),
+                            Text('${totC.toStringAsFixed(0)} ${tr('so\'m')}/кг',
+                                style: TextStyle(color: AppTheme.accent, fontWeight: FontWeight.bold, fontSize: 13)),
+                          ]),
+                        ),
+                      ),
                   ],
                 ),
               ),
@@ -500,12 +612,14 @@ class _RecipeLineDialog extends StatefulWidget {
   final int menuItemId;
   final Map? line;
   final List<dynamic> warehouses;
+  final List<dynamic> allIngredients; // avto-qidiruv manbasi
   final int? defaultWarehouseId;
   final int? excludeIngredientId; // P/F o'zini tanlamasin
   const _RecipeLineDialog({
     required this.menuItemId,
     this.line,
     required this.warehouses,
+    this.allIngredients = const [],
     this.defaultWarehouseId,
     this.excludeIngredientId,
   });
@@ -519,6 +633,10 @@ class _RecipeLineDialogState extends State<_RecipeLineDialog> {
   int? _whId;
   bool get _isEdit => widget.line != null;
   static const _units = ['кг', 'л', 'шт', 'г', 'мл'];
+
+  // --- Avto-qidiruv (mavjud masaliq tanlash) ---
+  final FocusNode _nameFocus = FocusNode();
+  int? _selectedIngredientId; // to'ldirilgan bo'lsa: mavjud masaliq, yangi YARATILMAYDI
 
   // --- P/F rejimi ---
   bool _pfMode = false;          // yangi satr: masaliq (false) yoki P/F (true)
@@ -577,8 +695,59 @@ class _RecipeLineDialogState extends State<_RecipeLineDialog> {
     _brutto.dispose();
     _yield.dispose();
     _price.dispose();
+    _nameFocus.dispose();
     super.dispose();
   }
+
+  String _norm(String s) => s.toLowerCase().replaceAll(RegExp(r'\s+'), ' ').trim();
+
+  // Kiritilgan matnga mos MAVJUD masaliqlar (P/F va o'zini tanlab bo'lmaydiganlar tashqari).
+  // startsWith avval, keyin contains — alifbo tartibida.
+  Iterable<Map> _suggest(String query) {
+    final nq = _norm(query);
+    if (nq.isEmpty) return const <Map>[];
+    final list = <Map>[];
+    for (final e in widget.allIngredients) {
+      if (e is! Map) continue;
+      if ((e['category']?.toString() ?? '') == 'П/Ф') continue; // P/F alohida rejimда
+      final id = e['id'] is int ? e['id'] as int : int.tryParse(e['id']?.toString() ?? '');
+      if (id != null && id == widget.excludeIngredientId) continue;
+      if (_norm(e['name']?.toString() ?? '').contains(nq)) list.add(e);
+    }
+    list.sort((a, b) {
+      final an = _norm(a['name']?.toString() ?? '');
+      final bn = _norm(b['name']?.toString() ?? '');
+      final aw = an.startsWith(nq) ? 0 : 1;
+      final bw = bn.startsWith(nq) ? 0 : 1;
+      if (aw != bw) return aw - bw;
+      return an.compareTo(bn);
+    });
+    return list.take(30);
+  }
+
+  // Mavjud masaliq tanlandi — id/birlik/narx/sklad kartadan olinadi (dublikat ochilmaydi)
+  void _onPick(Map m) {
+    setState(() {
+      _selectedIngredientId = m['id'] is int ? m['id'] as int : int.tryParse(m['id']?.toString() ?? '');
+      _name.text = m['name']?.toString() ?? '';
+      _unit = m['unit']?.toString() ?? _unit;
+      _price.text = (double.tryParse(m['price_per_unit']?.toString() ?? '0') ?? 0).toStringAsFixed(0);
+      final w = m['warehouse_id'];
+      _whId = w is int ? w : int.tryParse(w?.toString() ?? '');
+    });
+    _nameFocus.unfocus();
+  }
+
+  Widget _previewBox(double netto, double cost) => Container(
+        padding: const EdgeInsets.all(10),
+        decoration: BoxDecoration(color: AppTheme.bg, borderRadius: BorderRadius.circular(8)),
+        child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+          Text('${tr('Netto')}: ${netto.toStringAsFixed(3)}',
+              style: TextStyle(color: AppTheme.textSoft, fontSize: 13)),
+          Text('${tr('Tannarx')}: ${cost.toStringAsFixed(2)}',
+              style: TextStyle(color: AppTheme.accent, fontSize: 14, fontWeight: FontWeight.bold)),
+        ]),
+      );
 
   double get _b => double.tryParse(_brutto.text.replaceAll(',', '.')) ?? 0;
   double get _y => double.tryParse(_yield.text.replaceAll(',', '.')) ?? 100;
@@ -604,6 +773,14 @@ class _RecipeLineDialogState extends State<_RecipeLineDialog> {
           'ingredient_id': _pfId,
           'quantity': _b,
           'yield_percent': 100,
+        });
+      } else if (_selectedIngredientId != null) {
+        // MAVJUD masaliq — id bo'yicha ulanadi, yangi masaliq YARATILMAYDI (dublikat yo'q)
+        res = await ApiService.post('/menu/recipe', {
+          'menu_item_id': widget.menuItemId,
+          'ingredient_id': _selectedIngredientId,
+          'quantity': _b,
+          'yield_percent': _y,
         });
       } else {
         res = await ApiService.post('/menu/recipe', {
@@ -734,100 +911,251 @@ class _RecipeLineDialogState extends State<_RecipeLineDialog> {
                 ]),
               ),
             ],
-            // ---- Oddiy masaliq rejimi ----
-            if (_isEdit || !_pfMode) ...[
-            if (widget.warehouses.isNotEmpty) ...[
-              _isEdit
-                  ? Align(
-                      alignment: Alignment.centerLeft,
-                      child: Text('${tr('Sklad')}: ${_whName(_whId)}',
-                          style: TextStyle(color: AppTheme.accent, fontSize: 13, fontWeight: FontWeight.w600)),
-                    )
-                  : DropdownButtonFormField<int>(
-                      value: _whId,
-                      dropdownColor: AppTheme.card,
-                      isExpanded: true,
-                      style: TextStyle(color: AppTheme.text),
-                      decoration: _dec(tr('Sklad (qaysi sex)')),
-                      items: widget.warehouses
-                          .map((w) => DropdownMenuItem<int>(
-                                value: w['id'] as int,
-                                child: Text(w['name']?.toString() ?? '', style: TextStyle(color: AppTheme.text)),
-                              ))
-                          .toList(),
-                      onChanged: (v) => setState(() => _whId = v),
-                    ),
+            // ---- TAHRIR: mavjud satr (masaliq nomi o'zgarmaydi) ----
+            if (_isEdit) ...[
+              if (widget.warehouses.isNotEmpty) ...[
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text('${tr('Sklad')}: ${_whName(_whId)}',
+                      style: TextStyle(color: AppTheme.accent, fontSize: 13, fontWeight: FontWeight.w600)),
+                ),
+                const SizedBox(height: 10),
+              ],
+              TextField(
+                controller: _name,
+                enabled: false,
+                style: TextStyle(color: AppTheme.text),
+                decoration: _dec(tr('Masaliq nomi')),
+              ),
               const SizedBox(height: 10),
-            ],
-            TextField(
-              controller: _name,
-              enabled: !_isEdit,
-              style: TextStyle(color: AppTheme.text),
-              decoration: _dec(tr('Masaliq nomi')),
-            ),
-            const SizedBox(height: 10),
-            Row(children: [
-              SizedBox(
-                width: 90,
-                child: DropdownButtonFormField<String>(
-                  value: _unit,
-                  dropdownColor: AppTheme.card,
-                  style: TextStyle(color: AppTheme.text),
-                  decoration: _dec(tr('Birlik')),
-                  items: _units
-                      .map((u) => DropdownMenuItem(value: u, child: Text(u, style: TextStyle(color: AppTheme.text))))
-                      .toList(),
-                  onChanged: (v) => setState(() => _unit = v ?? 'кг'),
+              Row(children: [
+                SizedBox(
+                  width: 90,
+                  child: DropdownButtonFormField<String>(
+                    value: _unit,
+                    dropdownColor: AppTheme.card,
+                    style: TextStyle(color: AppTheme.text),
+                    decoration: _dec(tr('Birlik')),
+                    items: _units
+                        .map((u) => DropdownMenuItem(value: u, child: Text(u, style: TextStyle(color: AppTheme.text))))
+                        .toList(),
+                    onChanged: (v) => setState(() => _unit = v ?? 'кг'),
+                  ),
                 ),
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: TextField(
-                  controller: _brutto,
-                  keyboardType: TextInputType.number,
-                  style: TextStyle(color: AppTheme.text),
-                  onChanged: (_) => setState(() {}),
-                  decoration: _dec(tr('Brutto (xom)')),
-                ),
-              ),
-            ]),
-            const SizedBox(height: 10),
-            Row(children: [
-              Expanded(
-                child: TextField(
-                  controller: _yield,
-                  keyboardType: TextInputType.number,
-                  style: TextStyle(color: AppTheme.text),
-                  onChanged: (_) => setState(() {}),
-                  decoration: _dec(tr('Chiqish %')),
-                ),
-              ),
-              const SizedBox(width: 8),
-              // P/F satri narxi o'z retseptidan keladi — qo'lda o'zgartirilmaydi
-              if (!_isPfLine)
+                const SizedBox(width: 8),
                 Expanded(
                   child: TextField(
-                    controller: _price,
+                    controller: _brutto,
                     keyboardType: TextInputType.number,
                     style: TextStyle(color: AppTheme.text),
                     onChanged: (_) => setState(() {}),
-                    decoration: _dec(tr('Narx (1 birlik)')),
+                    decoration: _dec(tr('Brutto (xom)')),
                   ),
-                )
-              else
-                const Expanded(child: SizedBox()),
-            ]),
-            const SizedBox(height: 12),
-            Container(
-              padding: const EdgeInsets.all(10),
-              decoration: BoxDecoration(color: AppTheme.bg, borderRadius: BorderRadius.circular(8)),
-              child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-                Text('${tr('Netto')}: ${netto.toStringAsFixed(3)}',
-                    style: TextStyle(color: AppTheme.textSoft, fontSize: 13)),
-                Text('${tr('Tannarx')}: ${cost.toStringAsFixed(2)}',
-                    style: TextStyle(color: AppTheme.accent, fontSize: 14, fontWeight: FontWeight.bold)),
+                ),
               ]),
-            ),
+              const SizedBox(height: 10),
+              Row(children: [
+                Expanded(
+                  child: TextField(
+                    controller: _yield,
+                    keyboardType: TextInputType.number,
+                    style: TextStyle(color: AppTheme.text),
+                    onChanged: (_) => setState(() {}),
+                    decoration: _dec(tr('Chiqish %')),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                if (!_isPfLine)
+                  Expanded(
+                    child: TextField(
+                      controller: _price,
+                      keyboardType: TextInputType.number,
+                      style: TextStyle(color: AppTheme.text),
+                      onChanged: (_) => setState(() {}),
+                      decoration: _dec(tr('Narx (1 birlik)')),
+                    ),
+                  )
+                else
+                  const Expanded(child: SizedBox()),
+              ]),
+              const SizedBox(height: 12),
+              _previewBox(netto, cost),
+            ],
+            // ---- YANGI oddiy masaliq: AVTO-QIDIRUV (yozing -> tanlang, dublikat ochilmaydi) ----
+            if (!_isEdit && !_pfMode) ...[
+              RawAutocomplete<Map>(
+                textEditingController: _name,
+                focusNode: _nameFocus,
+                optionsBuilder: (t) => _suggest(t.text),
+                displayStringForOption: (m) => m['name']?.toString() ?? '',
+                onSelected: _onPick,
+                fieldViewBuilder: (ctx, ctrl, fnode, _) => TextField(
+                  controller: ctrl,
+                  focusNode: fnode,
+                  style: TextStyle(color: AppTheme.text),
+                  onChanged: (_) {
+                    // Tanlangan masaliqdan chetga chiqilsa — tanlovni bekor qilamiz (yangi sifatida)
+                    if (_selectedIngredientId != null) setState(() => _selectedIngredientId = null);
+                  },
+                  decoration: _dec(tr('Masaliq nomi (yozing: pom...)')).copyWith(
+                    prefixIcon: Icon(
+                      _selectedIngredientId != null ? Icons.check_circle : Icons.search,
+                      color: _selectedIngredientId != null ? Colors.green : AppTheme.textSoft,
+                      size: 18,
+                    ),
+                  ),
+                ),
+                optionsViewBuilder: (ctx, onSel, options) => Align(
+                  alignment: Alignment.topLeft,
+                  child: Material(
+                    color: AppTheme.card,
+                    elevation: 8,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(8),
+                      side: BorderSide(color: AppTheme.border),
+                    ),
+                    child: ConstrainedBox(
+                      constraints: const BoxConstraints(maxHeight: 240, maxWidth: 300),
+                      child: ListView.builder(
+                        padding: EdgeInsets.zero,
+                        shrinkWrap: true,
+                        itemCount: options.length,
+                        itemBuilder: (c, i) {
+                          final m = options.elementAt(i);
+                          final pr = (double.tryParse(m['price_per_unit']?.toString() ?? '0') ?? 0).toStringAsFixed(0);
+                          return InkWell(
+                            onTap: () => onSel(m),
+                            child: Padding(
+                              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                              child: Row(children: [
+                                Expanded(
+                                  child: Text(m['name']?.toString() ?? '',
+                                      overflow: TextOverflow.ellipsis,
+                                      style: TextStyle(color: AppTheme.text, fontSize: 13)),
+                                ),
+                                Text('$pr/${m['unit'] ?? ''}',
+                                    style: TextStyle(color: AppTheme.textSoft, fontSize: 11)),
+                              ]),
+                            ),
+                          );
+                        },
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 10),
+              if (_selectedIngredientId != null) ...[
+                // Mavjud masaliq ulanadi — sklad/narx/birlik kartadan olinadi
+                Container(
+                  padding: const EdgeInsets.all(9),
+                  decoration: BoxDecoration(
+                    color: Colors.green.withValues(alpha: 0.10),
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: Colors.green.withValues(alpha: 0.4)),
+                  ),
+                  child: Row(children: [
+                    const Icon(Icons.link, color: Colors.green, size: 16),
+                    const SizedBox(width: 6),
+                    Expanded(
+                      child: Text(
+                        '${tr('Mavjud masaliq')} · $_unit · ${_price.text}/$_unit · ${_whName(_whId)}',
+                        style: TextStyle(color: AppTheme.textSoft, fontSize: 11),
+                      ),
+                    ),
+                  ]),
+                ),
+                const SizedBox(height: 10),
+                Row(children: [
+                  Expanded(
+                    child: TextField(
+                      controller: _brutto,
+                      keyboardType: TextInputType.number,
+                      style: TextStyle(color: AppTheme.text),
+                      onChanged: (_) => setState(() {}),
+                      decoration: _dec(tr('Brutto (xom)')),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: TextField(
+                      controller: _yield,
+                      keyboardType: TextInputType.number,
+                      style: TextStyle(color: AppTheme.text),
+                      onChanged: (_) => setState(() {}),
+                      decoration: _dec(tr('Chiqish %')),
+                    ),
+                  ),
+                ]),
+              ] else ...[
+                // Yangi masaliq — sklad, birlik, narx kiritiladi
+                if (widget.warehouses.isNotEmpty) ...[
+                  DropdownButtonFormField<int>(
+                    value: _whId,
+                    dropdownColor: AppTheme.card,
+                    isExpanded: true,
+                    style: TextStyle(color: AppTheme.text),
+                    decoration: _dec(tr('Sklad (qaysi sex)')),
+                    items: widget.warehouses
+                        .map((w) => DropdownMenuItem<int>(
+                              value: w['id'] as int,
+                              child: Text(w['name']?.toString() ?? '', style: TextStyle(color: AppTheme.text)),
+                            ))
+                        .toList(),
+                    onChanged: (v) => setState(() => _whId = v),
+                  ),
+                  const SizedBox(height: 10),
+                ],
+                Row(children: [
+                  SizedBox(
+                    width: 90,
+                    child: DropdownButtonFormField<String>(
+                      value: _unit,
+                      dropdownColor: AppTheme.card,
+                      style: TextStyle(color: AppTheme.text),
+                      decoration: _dec(tr('Birlik')),
+                      items: _units
+                          .map((u) => DropdownMenuItem(value: u, child: Text(u, style: TextStyle(color: AppTheme.text))))
+                          .toList(),
+                      onChanged: (v) => setState(() => _unit = v ?? 'кг'),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: TextField(
+                      controller: _brutto,
+                      keyboardType: TextInputType.number,
+                      style: TextStyle(color: AppTheme.text),
+                      onChanged: (_) => setState(() {}),
+                      decoration: _dec(tr('Brutto (xom)')),
+                    ),
+                  ),
+                ]),
+                const SizedBox(height: 10),
+                Row(children: [
+                  Expanded(
+                    child: TextField(
+                      controller: _yield,
+                      keyboardType: TextInputType.number,
+                      style: TextStyle(color: AppTheme.text),
+                      onChanged: (_) => setState(() {}),
+                      decoration: _dec(tr('Chiqish %')),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: TextField(
+                      controller: _price,
+                      keyboardType: TextInputType.number,
+                      style: TextStyle(color: AppTheme.text),
+                      onChanged: (_) => setState(() {}),
+                      decoration: _dec(tr('Narx (1 birlik)')),
+                    ),
+                  ),
+                ]),
+              ],
+              const SizedBox(height: 12),
+              _previewBox(netto, cost),
             ],
           ]),
         ),

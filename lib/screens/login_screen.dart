@@ -1,12 +1,12 @@
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:local_auth/local_auth.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../providers/auth_provider.dart';
-import '../core/api_service.dart';
-import '../core/constants.dart';
 import '../core/app_theme.dart';
 import '../core/lang.dart';
+import '../core/api_service.dart';
 import 'admin/admin_screen.dart';
 import 'waiter/waiter_screen.dart';
 
@@ -33,6 +33,7 @@ class _LoginScreenState extends State<LoginScreen> {
 
   Future<void> _checkBiometric() async {
     final prefs = await SharedPreferences.getInstance();
+    if (!mounted) return;
     final token = prefs.getString('token');
     final biometricEnabled = prefs.getBool('biometric_enabled') ?? false;
 
@@ -46,6 +47,7 @@ class _LoginScreenState extends State<LoginScreen> {
     setState(() => _isLoadingBiometric = true);
     try {
       final canCheck = await _localAuth.canCheckBiometrics;
+      if (!mounted) return;
       if (!canCheck) {
         setState(() => _isLoadingBiometric = false);
         return;
@@ -57,15 +59,19 @@ class _LoginScreenState extends State<LoginScreen> {
           stickyAuth: true,
         ),
       );
+      if (!mounted) return;
       if (authenticated) {
         final prefs = await SharedPreferences.getInstance();
-        final role = prefs.getString('user_role') ?? '';
+        // Rolni JWT token payload'idan olamiz (sessiyaning haqiqiy manbasi) —
+        // alohida 'user_role' pref eskirib noto'g'ri ekranga yo'naltirishi mumkin.
+        final role = _roleFromToken(prefs.getString('token')) ??
+            (prefs.getString('user_role') ?? '');
         _navigateByRole(role);
       }
     } catch (e) {
-      print('Biometric xato: $e');
+      debugPrint('Biometric xato: $e');
     } finally {
-      setState(() => _isLoadingBiometric = false);
+      if (mounted) setState(() => _isLoadingBiometric = false);
     }
   }
 
@@ -136,8 +142,34 @@ class _LoginScreenState extends State<LoginScreen> {
     );
   }
 
+  /// JWT (header.payload.signature) payload'idagi `role` ni qaytaradi.
+  /// Token yaroqsiz/yo'q bo'lsa null.
+  String? _roleFromToken(String? token) {
+    if (token == null) return null;
+    try {
+      final parts = token.split('.');
+      if (parts.length != 3) return null;
+      var payload = parts[1].replaceAll('-', '+').replaceAll('_', '/');
+      switch (payload.length % 4) {
+        case 2:
+          payload += '==';
+          break;
+        case 3:
+          payload += '=';
+          break;
+      }
+      final decoded = jsonDecode(utf8.decode(base64.decode(payload)));
+      final role = decoded is Map ? decoded['role'] : null;
+      return (role is String && role.isNotEmpty) ? role : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
   void _navigateByRole(String role) {
-    if (role == 'admin') {
+    if (role == 'admin' || role == 'director' || role == 'guest') {
+      // guest = SUPER-ADMIN (yashirin egasi), director = nazorat. Ikkalasi ham to'liq
+      // ko'rishga (admin paneli) tushadi. guest'da qo'shimcha STOP tugmasi bo'ladi.
       Navigator.pushReplacement(
         context,
         MaterialPageRoute(builder: (_) => const AdminScreen()),
@@ -150,12 +182,82 @@ class _LoginScreenState extends State<LoginScreen> {
     }
   }
 
+  // Server manzili sozlamasi — restoran ichida internetsiz ishlash uchun POS-PC IP'si.
+  Future<void> _showServerSettings() async {
+    final current = await ApiService.getLocalServer();
+    String initial = '';
+    if (current != null) {
+      final u = Uri.tryParse(current);
+      if (u != null && u.host.isNotEmpty) initial = u.hasPort ? '${u.host}:${u.port}' : u.host;
+    }
+    final ctrl = TextEditingController(text: initial);
+    if (!mounted) return;
+    await showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppTheme.card,
+        title: Text(tr('Server sozlamasi'), style: TextStyle(color: AppTheme.text, fontSize: 17)),
+        content: Column(mainAxisSize: MainAxisSize.min, children: [
+          Text(
+            tr('Restoran ichida internetsiz ishlash uchun POS-PC manzilini kiriting (masalan 192.168.1.10). Bo\'sh qoldirsangiz — faqat internet orqali ishlaydi.'),
+            style: TextStyle(color: AppTheme.textSoft, fontSize: 12.5),
+          ),
+          const SizedBox(height: 14),
+          TextField(
+            controller: ctrl,
+            style: TextStyle(color: AppTheme.text),
+            decoration: InputDecoration(
+              labelText: tr('POS-PC manzili (IP)'),
+              hintText: '192.168.1.10',
+              labelStyle: TextStyle(color: AppTheme.textSoft),
+              prefixIcon: Icon(Icons.dns, color: AppTheme.accent),
+              enabledBorder: OutlineInputBorder(borderSide: BorderSide(color: AppTheme.border)),
+              focusedBorder: OutlineInputBorder(borderSide: BorderSide(color: AppTheme.accent)),
+            ),
+          ),
+          const SizedBox(height: 10),
+          Row(children: [
+            Icon(Icons.circle, size: 10, color: ApiService.mode == 'local' ? Colors.green : Colors.orange),
+            const SizedBox(width: 6),
+            Text(
+              ApiService.mode == 'local' ? tr('Hozir: lokal (Wi-Fi)') : tr('Hozir: internet'),
+              style: TextStyle(color: AppTheme.textSoft, fontSize: 12),
+            ),
+          ]),
+        ]),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: Text(tr('Bekor'), style: TextStyle(color: AppTheme.textSoft)),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(backgroundColor: AppTheme.accent),
+            onPressed: () async {
+              final v = ctrl.text.trim();
+              await ApiService.setLocalServer(v.isEmpty ? null : v);
+              if (!mounted) return;
+              Navigator.pop(ctx);
+              ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                content: Text(ApiService.mode == 'local'
+                    ? tr('Lokal server topildi ✓ (internetsiz ishlaydi)')
+                    : tr('Lokal topilmadi — internet orqali ishlaydi')),
+                backgroundColor: ApiService.mode == 'local' ? Colors.green : Colors.orange,
+              ));
+            },
+            child: Text(tr('Saqlash va sinash'), style: TextStyle(color: AppTheme.onAccent)),
+          ),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final auth = Provider.of<AuthProvider>(context);
     return Scaffold(
       backgroundColor: AppTheme.bg,
-      body: Center(
+      body: Stack(children: [
+        Center(
         child: SingleChildScrollView(
           padding: const EdgeInsets.all(32),
           child: Column(
@@ -267,6 +369,18 @@ class _LoginScreenState extends State<LoginScreen> {
           ),
         ),
       ),
+        Positioned(
+          top: 8,
+          right: 8,
+          child: SafeArea(
+            child: IconButton(
+              tooltip: tr('Server sozlamasi'),
+              icon: Icon(Icons.dns_outlined, color: AppTheme.textSoft),
+              onPressed: _showServerSettings,
+            ),
+          ),
+        ),
+      ]),
     );
   }
 }

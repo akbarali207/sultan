@@ -146,8 +146,11 @@ const updateInventoryItem = async (req, res) => {
       `SELECT * FROM inventory_items WHERE id = $1`,
       [id]
     );
-    const expected = item.rows[0].expected_quantity;
-    const difference = actual_quantity - expected;
+    if (item.rows.length === 0) {
+      return res.status(404).json({ message: 'Inventarizatsiya elementi topilmadi' });
+    }
+    const expected = Number(item.rows[0].expected_quantity) || 0;
+    const difference = (Number(actual_quantity) || 0) - expected;
 
     const result = await pool.query(
       `UPDATE inventory_items
@@ -174,6 +177,13 @@ const closeInventory = async (req, res) => {
       [id]
     );
 
+    // Audit uchun: inventarizatsiyani yakunlagan foydalanuvchi nomi (bir marta)
+    let inventoryUserName = null;
+    if (req.user && req.user.id) {
+      const u = await client.query('SELECT full_name FROM users WHERE id = $1', [req.user.id]);
+      inventoryUserName = u.rows[0] ? u.rows[0].full_name : null;
+    }
+
     for (const item of items.rows) {
       if (item.tableware_id) {
         await client.query(
@@ -181,10 +191,29 @@ const closeInventory = async (req, res) => {
           [item.actual_quantity, item.tableware_id]
         );
       } else if (item.ingredient_id) {
+        // Eski qoldiqni o'qib olib, faqat O'ZGARSA audit log yozamiz
+        const prev = await client.query(
+          `SELECT stock_quantity FROM ingredients WHERE id = $1`,
+          [item.ingredient_id]
+        );
+        const oldQty = prev.rows[0] ? prev.rows[0].stock_quantity : null;
         await client.query(
           `UPDATE ingredients SET stock_quantity = $1 WHERE id = $2`,
           [item.actual_quantity, item.ingredient_id]
         );
+        if (String(oldQty) !== String(item.actual_quantity)) {
+          await client.query(
+            `INSERT INTO stock_change_log (ingredient_id, user_id, user_name, changes, reason)
+             VALUES ($1, $2, $3, $4, $5)`,
+            [
+              item.ingredient_id,
+              req.user && req.user.id ? req.user.id : null,
+              inventoryUserName,
+              'Inventar: ' + oldQty + ' -> ' + item.actual_quantity,
+              'Inventarizatsiya #' + id,
+            ]
+          );
+        }
       }
     }
 

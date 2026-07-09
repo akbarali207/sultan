@@ -8,7 +8,7 @@ const getPending = async (req, res) => {
       `SELECT o.id as order_id, o.notes as order_notes, o.created_at,
               t.number as table_number, t.name as table_name,
               u.full_name as waiter_name,
-              oi.quantity, oi.notes as item_notes,
+              oi.id as item_id, oi.quantity, oi.notes as item_notes,
               mi.name as item_name,
               ps.id as station_id, ps.name as station_name,
               ps.printer_ip, ps.printer_port, ps.printer_name
@@ -33,6 +33,7 @@ const getPending = async (req, res) => {
           waiter_name: r.waiter_name || '',
           notes: r.order_notes || '',
           created_at: r.created_at,
+          item_ids: [],
           stations: {},
         };
       }
@@ -48,6 +49,7 @@ const getPending = async (req, res) => {
           items: [],
         };
       }
+      if (r.item_id != null) o.item_ids.push(r.item_id);
       o.stations[sid].items.push({
         name: r.item_name,
         quantity: r.quantity,
@@ -71,8 +73,22 @@ const getPending = async (req, res) => {
 const markPrinted = async (req, res) => {
   try {
     const { id } = req.params;
-    // Faqat chop etilmagan taomlarni belgilaymiz — keyin qo'shilgan yangi taom keyingi siklда chiqadi
-    await pool.query(`UPDATE order_items SET printed = true WHERE order_id = $1 AND printed = false`, [id]);
+    // Faqat AYNAN chop etilgan qatorlarni (agent /pending dan olgan item_ids) belgilaymiz.
+    // Chop oynasida qo'shilgan yangi taom belgilamay qoladi — keyingi siklda chekiga chiqadi (jim yo'qolmaydi).
+    const ids = Array.isArray(req.body && req.body.item_ids)
+      ? req.body.item_ids.map((x) => parseInt(x, 10)).filter((x) => Number.isInteger(x))
+      : null;
+    if (ids && ids.length) {
+      await pool.query(
+        `UPDATE order_items SET printed = true WHERE order_id = $1 AND printed = false AND id = ANY($2::int[])`,
+        [id, ids]
+      );
+    } else if (ids && ids.length === 0) {
+      // Agent aniq "hech qanday qator chop etilmadi" dedi — hech narsani belgilamaymiz
+    } else {
+      // Eski agent (item_ids yubormaydi) — orqaga moslik uchun eski xatti-harakat
+      await pool.query(`UPDATE order_items SET printed = true WHERE order_id = $1 AND printed = false`, [id]);
+    }
     await pool.query(`UPDATE orders SET printed = true WHERE id = $1`, [id]);
     res.json({ ok: true });
   } catch (err) {

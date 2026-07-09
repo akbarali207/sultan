@@ -4,7 +4,7 @@ const auth = require('../middleware/authMiddleware');
 const {
   getTables, createTable,
   createOrder, getOrders, getOrderItems,
-  updateOrderStatus, deleteOrder, cancelOrderItem, printBill
+  updateOrderStatus, deleteOrder, cancelOrderItem, printBill, moveOrder, reopenOrder
 } = require('../controllers/orderController');
 
 router.get('/tables', auth, getTables);
@@ -14,6 +14,8 @@ router.get('/', auth, getOrders);
 router.post('/', auth, createOrder);
 router.get('/:id/items', auth, getOrderItems);
 router.put('/:id/status', auth, updateOrderStatus);
+router.put('/:id/move', auth, moveOrder); // stolni ko'chirish / birlashtirish
+router.put('/:id/reopen', auth, reopenOrder); // to'langan zakazni qayta ochish (to'lovni tuzatish)
 router.post('/:id/bill', auth, printBill); // hisob/chek chiqarish (bill_requested)
 router.delete('/:orderId/items/:itemId', auth, cancelOrderItem); // bitta taomni bekor qilish
 router.delete('/:id', auth, deleteOrder); // butun zakazni o'chirish

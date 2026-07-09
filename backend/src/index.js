@@ -27,6 +27,10 @@ app.use((req, res, next) => {
 // Static rasm papkasi
 app.use('/uploads', express.static(path.join(__dirname, '../uploads')));
 
+// Yengil "tiriklik" tekshiruvi — ilova qaysi manzil (lokal Wi-Fi yoki internet)
+// ishlayotganini shu orqali aniqlaydi. Auth va DB kerak emas — tez javob beradi.
+app.get('/api/health', (req, res) => res.json({ ok: true, ts: Date.now() }));
+
 // Routes
 const authRoutes = require('./routes/authRoutes');
 const userRoutes = require('./routes/userRoutes');
@@ -43,6 +47,7 @@ const printRoutes = require('./routes/printRoutes');
 const roleRoutes = require('./routes/roleRoutes');
 const roomRoutes = require('./routes/roomRoutes');
 const eventRoutes = require('./routes/eventRoutes');
+const systemRoutes = require('./routes/systemRoutes');
 
 app.use('/api/auth', authRoutes);
 app.use('/api/users', userRoutes);
@@ -59,6 +64,7 @@ app.use('/api/print', printRoutes);
 app.use('/api/roles', roleRoutes);
 app.use('/api/rooms', roomRoutes);
 app.use('/api/events', eventRoutes); // SSE: real-time invalidatsiya hodisalari
+app.use('/api/system', systemRoutes); // super-admin STOP / tizim holati
 
 // Flutter WEB ilovasini xizmat qilish (build/web mavjud bo'lsa)
 const webDir = path.join(__dirname, '../../build/web');
@@ -84,7 +90,16 @@ if (fs.existsSync(path.join(webDir, 'index.html'))) {
   });
 }
 
-app.listen(PORT, () => {
+// Jarayon darajasidagi himoya to'ri — kutilmagan xato butun POS'ni jimgina o'ldirmasin.
+process.on('unhandledRejection', (reason) => {
+  console.error('[proc] unhandledRejection:', reason && reason.message ? reason.message : reason);
+});
+process.on('uncaughtException', (err) => {
+  console.error('[proc] uncaughtException:', err && err.message ? err.message : err);
+});
+
+const { runMigrations } = require('./config/runMigrations');
+const startServer = () => app.listen(PORT, () => {
   console.log(`Server ${PORT} portda ishlamoqda...`);
   // Hikvision face-id davomat polleri (HIK_ENABLED=true bo'lsa)
   try {
@@ -108,5 +123,26 @@ app.listen(PORT, () => {
     }
   }
 });
+
+// Avval qo'llanmagan migratsiyalarni qo'llaymiz (schema-drift oldini olish),
+// keyin serverni ishga tushiramiz. Migratsiya xato bersa ham server ochiladi.
+runMigrations(pool)
+  .then((failed) => {
+    if (Array.isArray(failed) && failed.length) {
+      const bar = '!'.repeat(64);
+      console.error('\n' + bar);
+      console.error(`[migrate] OGOHLANTIRISH: ${failed.length} ta migratsiya QO'LLANMADI — sxema to'liq emas!`);
+      for (const f of failed) console.error('   ✗ ' + f);
+      console.error("Ba'zi endpointlar 500 berishi mumkin. Sxemani tekshiring.");
+      if (process.env.MIGRATE_STRICT === 'true') {
+        console.error('[migrate] MIGRATE_STRICT=true — server ISHGA TUSHIRILMAYDI.');
+        console.error(bar + '\n');
+        process.exit(1);
+      }
+      console.error(bar + '\n');
+    }
+  })
+  .catch((e) => console.error('[migrate] xato (server baribir ishga tushadi):', e.message))
+  .finally(startServer);
 
 module.exports = app;

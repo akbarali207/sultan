@@ -6,7 +6,11 @@ import 'firebase_options.dart';
 import 'providers/auth_provider.dart';
 import 'core/app_theme.dart';
 import 'core/lang.dart';
+import 'core/api_service.dart';
 import 'screens/login_screen.dart';
+
+// Global navigator — 401 (sessiya tugadi) da istalgan joydan login ga qaytish uchun
+final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -24,6 +28,22 @@ void main() async {
 
   await AppTheme.instance.load();
   await Lang.instance.load();
+
+  // Server manzilini aniqlaymiz: restoran Wi-Fi'sida lokal POS-PC bo'lsa — lokal
+  // (internetsiz ham ishlaydi), aks holda internet. Xato bo'lsa ham ilova ochiladi.
+  try {
+    await ApiService.resolveBase();
+  } catch (_) {}
+
+  // Token muddati o'tsa (401) — ilova avtomatik login ekraniga qaytadi
+  // (aks holda ro'yxatlar jimgina bo'sh qolib, smena to'xtab qolardi).
+  ApiService.onUnauthorized = () {
+    navigatorKey.currentState?.pushAndRemoveUntil(
+      MaterialPageRoute(builder: (_) => const LoginScreen()),
+      (route) => false,
+    );
+  };
+
   runApp(const SultanApp());
 }
 
@@ -41,6 +61,7 @@ class SultanApp extends StatelessWidget {
         animation: Listenable.merge([AppTheme.instance, Lang.instance]),
         builder: (context, _) => MaterialApp(
           title: 'Sultan Restoran',
+          navigatorKey: navigatorKey,
           debugShowCheckedModeBanner: false,
           theme: ThemeData(
             useMaterial3: true,

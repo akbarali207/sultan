@@ -309,10 +309,89 @@ const deleteIngredient = async (req, res) => {
     if (qty > 0) {
       return res.status(400).json({ message: `Omborda ${qty} birlik qolgan. O'chirish uchun avval sarflang!` });
     }
-    await pool.query(`DELETE FROM ingredients WHERE id = $1`, [id]);
+    // FK bog'liqlik: retsept yoki menyu mahsulotida ishlatilsa — tushunarli 400 (raw 500 emas)
+    const deps = await pool.query(
+      `SELECT
+         (SELECT COUNT(*) FROM recipe_items WHERE ingredient_id = $1) AS recipe_count,
+         (SELECT COUNT(*) FROM menu_items   WHERE ingredient_id = $1) AS menu_count`,
+      [id]
+    );
+    const recipeCount = parseInt(deps.rows[0].recipe_count, 10) || 0;
+    const menuCount = parseInt(deps.rows[0].menu_count, 10) || 0;
+    if (recipeCount > 0 || menuCount > 0) {
+      const parts = [];
+      if (recipeCount > 0) parts.push(`${recipeCount} ta retseptda`);
+      if (menuCount > 0) parts.push(`${menuCount} ta menyu mahsulotida`);
+      return res.status(400).json({
+        message: `Bu mahsulot ${parts.join(' va ')} ishlatilmoqda. Avval o'sha bog'lanishlarni olib tashlang!`,
+      });
+    }
+    // Qolgan FK (inventory_items/stock_incoming — tarixiy) bo'lsa ham raw 500 bermasin
+    try {
+      await pool.query(`DELETE FROM ingredients WHERE id = $1`, [id]);
+    } catch (e) {
+      if (e.code === '23503') {
+        return res.status(400).json({ message: 'Bu mahsulot inventarizatsiya yoki kirim tarixida bor — o\'chirib bo\'lmaydi' });
+      }
+      throw e;
+    }
     res.json({ message: 'Mahsulot o\'chirildi!' });
   } catch (err) {
     res.status(500).json({ message: err.message });
+  }
+};
+
+// DUBLIKATNI BIRLASHTIRISH (merge): :id ni target_id ichiga qo'shadi —
+// retseptlar/menyu/inventar target ga perecepilanadi, ombor qoldig'i QO'SHILADI
+// (MINUS saqlanadi — ataylab), so'ng :id o'chiriladi. Ishlatilayotgan dublikatni
+// shu yo'l bilan tozalash mumkin (oddiy o'chirish taqiqlangan).
+const mergeIngredient = async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const id = parseInt(req.params.id);
+    const targetId = parseInt(req.body ? req.body.target_id : null);
+    if (!id || !targetId || id === targetId) {
+      return res.status(400).json({ message: 'target_id kerak va o\'ziga qo\'shib bo\'lmaydi' });
+    }
+    await client.query('BEGIN');
+    const rows = (await client.query(`SELECT id, name, stock_quantity FROM ingredients WHERE id = ANY($1)`, [[id, targetId]])).rows;
+    if (rows.length < 2) { await client.query('ROLLBACK'); return res.status(404).json({ message: 'Mahsulot topilmadi' }); }
+    const src = rows.find((r) => r.id === id);
+    // ombor qoldig'ini target ga qo'shamiz (minus saqlanadi — oddiy arifmetika)
+    await client.query(`UPDATE ingredients SET stock_quantity = COALESCE(stock_quantity,0) + $1 WHERE id = $2`,
+      [parseFloat(src.stock_quantity) || 0, targetId]);
+    // ingredient_id ustuni bor BARCHA jadvallarni dinamik perecepilaymiz
+    const refTables = (await client.query(
+      `SELECT table_name FROM information_schema.columns WHERE column_name='ingredient_id' AND table_schema='public'`
+    )).rows.map((r) => r.table_name);
+    for (const t of refTables) {
+      await client.query(`UPDATE ${t} SET ingredient_id = $1 WHERE ingredient_id = $2`, [targetId, id]);
+    }
+    // recipe_items kolliziya: bir taomda target ikki marta bo'lsa -> quantity qo'shib bittaga
+    const rcol = (await client.query(
+      `SELECT menu_item_id, array_agg(id ORDER BY id) ids, SUM(quantity) q
+       FROM recipe_items WHERE ingredient_id=$1 GROUP BY menu_item_id HAVING COUNT(*)>1`, [targetId])).rows;
+    for (const c of rcol) {
+      await client.query(`UPDATE recipe_items SET quantity=$1 WHERE id=$2`, [c.q, c.ids[0]]);
+      await client.query(`DELETE FROM recipe_items WHERE id = ANY($1)`, [c.ids.slice(1)]);
+    }
+    // inventory_items kolliziya: bir inventarizatsiyada target ikki marta
+    const icol = (await client.query(
+      `SELECT inventory_id, array_agg(id ORDER BY id) ids, SUM(expected_quantity) eq, SUM(actual_quantity) aq, SUM(difference) df
+       FROM inventory_items WHERE ingredient_id=$1 GROUP BY inventory_id HAVING COUNT(*)>1`, [targetId])).rows;
+    for (const c of icol) {
+      await client.query(`UPDATE inventory_items SET expected_quantity=$1, actual_quantity=$2, difference=$3 WHERE id=$4`,
+        [c.eq, c.aq, c.df, c.ids[0]]);
+      await client.query(`DELETE FROM inventory_items WHERE id = ANY($1)`, [c.ids.slice(1)]);
+    }
+    await client.query(`DELETE FROM ingredients WHERE id = $1`, [id]);
+    await client.query('COMMIT');
+    res.json({ ok: true, message: 'Dublikat birlashtirildi' });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    res.status(500).json({ message: err.message });
+  } finally {
+    client.release();
   }
 };
 
@@ -430,6 +509,7 @@ const assignFromRecipe = async (req, res) => {
 
 module.exports = {
   getIngredients, createIngredient, addIncoming, getIncomingHistory, getLowStock, updateSellingPrice, deleteIngredient,
+  mergeIngredient,
   editIngredient, getStockHistory, producePf,
   getWarehouses, createWarehouse, updateWarehouse, deleteWarehouse, assignFromRecipe
 };

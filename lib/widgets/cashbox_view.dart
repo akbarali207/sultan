@@ -25,6 +25,8 @@ class _CashboxViewState extends State<CashboxView> {
   String? _selectedDate; // aniq kun tanlanganda (YYYY-MM-DD), period o'rniga from/to ishlaydi
   int _tab = 0; // 0 = tranzaksiyalar, 1 = qarzdorlar
   String _txFilter = 'all'; // all | income | expense
+  String _methodFilter = 'all'; // all | cash | card — to'lov usuli
+  final TextEditingController _amountCtrl = TextEditingController(); // summa bo'yicha qidiruv
   bool _busy = false; // pul operatsiyasi ketmoqda — ikki marta bosishdan himoya
   Map<String, dynamic>? _data;
 
@@ -43,6 +45,7 @@ class _CashboxViewState extends State<CashboxView> {
   @override
   void dispose() {
     _pwCtrl.dispose();
+    _amountCtrl.dispose();
     super.dispose();
   }
 
@@ -58,6 +61,7 @@ class _CashboxViewState extends State<CashboxView> {
     });
     try {
       final res = await ApiService.post(AppConstants.verifyPassword, {'password': pw});
+      if (!mounted) return;
       if (res is Map && res['ok'] == true) {
         _pwCtrl.clear();
         setState(() {
@@ -72,6 +76,7 @@ class _CashboxViewState extends State<CashboxView> {
         });
       }
     } catch (_) {
+      if (!mounted) return;
       setState(() {
         _pwError = tr('Xato');
         _checking = false;
@@ -638,6 +643,105 @@ class _CashboxViewState extends State<CashboxView> {
     }
   }
 
+  // Kun yakunlash (Z-hisobot) + kech yopishlarni tasdiqlash (director/admin)
+  Future<void> _closeDay() async {
+    List<dynamic> pending = [];
+    try {
+      final r = await ApiService.get('/reports/day-closes?status=pending');
+      pending = r is List ? r : [];
+    } catch (_) {}
+    if (!mounted) return;
+    await showDialog(
+      context: context,
+      builder: (_) => StatefulBuilder(
+        builder: (ctx, setSt) => AlertDialog(
+          backgroundColor: AppTheme.card,
+          title: Text(tr('Kun yakunlash (Z)'), style: TextStyle(color: AppTheme.text, fontSize: 17)),
+          content: SizedBox(
+            width: 360,
+            child: SingleChildScrollView(
+              child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Text(tr('Bugungi kunni yopish (Z-hisobot). Vaqtida (02:30 gача) yopilmasa — direktor tasdig\'i kerak.'),
+                    style: TextStyle(color: AppTheme.textSoft, fontSize: 13)),
+                const SizedBox(height: 12),
+                SizedBox(
+                  width: double.infinity,
+                  child: ElevatedButton.icon(
+                    style: ElevatedButton.styleFrom(backgroundColor: AppTheme.accent),
+                    icon: const Icon(Icons.event_available, color: Colors.white),
+                    label: Text(tr('Bugungi kunni yopish'), style: const TextStyle(color: Colors.white)),
+                    onPressed: () async {
+                      try {
+                        final res = await ApiService.post('/reports/close-day', {},
+                            idempotencyKey: ApiService.newIdempotencyKey());
+                        if (!ctx.mounted) return;
+                        final st = res is Map ? res['status']?.toString() : null;
+                        final okClose = st == 'closed' || st == 'approved';
+                        final msg = st == 'pending'
+                            ? tr('Yuborildi — direktor tasdig\'ini kutmoqda')
+                            : okClose
+                                ? tr('Kun yopildi ✓')
+                                : (res is Map ? (res['message']?.toString() ?? tr('Xato')) : tr('Xato'));
+                        ScaffoldMessenger.of(ctx).showSnackBar(SnackBar(
+                            content: Text(msg), backgroundColor: okClose ? Colors.green : Colors.orange));
+                        Navigator.pop(ctx);
+                      } catch (e) {
+                        if (!ctx.mounted) return;
+                        ScaffoldMessenger.of(ctx).showSnackBar(SnackBar(
+                            content: Text('${tr('Xato')}: $e'), backgroundColor: Colors.red));
+                      }
+                    },
+                  ),
+                ),
+                if (pending.isNotEmpty) ...[
+                  const SizedBox(height: 16),
+                  Text(tr('Tasdiqlash kutilmoqda (kech yopilgan):'),
+                      style: const TextStyle(color: Colors.deepOrange, fontWeight: FontWeight.bold, fontSize: 13)),
+                  ...pending.map((p) => Container(
+                        margin: const EdgeInsets.only(top: 8),
+                        padding: const EdgeInsets.all(10),
+                        decoration: BoxDecoration(
+                            color: Colors.orange.withValues(alpha: 0.08), borderRadius: BorderRadius.circular(8)),
+                        child: Row(children: [
+                          Expanded(
+                            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                              Text('${p['biz_date']} — ${p['closed_by_name'] ?? ''}',
+                                  style: TextStyle(color: AppTheme.text, fontWeight: FontWeight.w600, fontSize: 13)),
+                              Text('${tr('Savdo')}: ${p['sales']}  ·  ${tr('Kassa')}: ${p['received']}',
+                                  style: TextStyle(color: AppTheme.textSoft, fontSize: 11)),
+                            ]),
+                          ),
+                          IconButton(
+                            icon: const Icon(Icons.check_circle, color: Colors.green),
+                            tooltip: tr('Tasdiqlash'),
+                            onPressed: () async {
+                              await ApiService.post('/reports/day-closes/${p['id']}/approve', {'approve': true});
+                              setSt(() => pending.remove(p));
+                            },
+                          ),
+                          IconButton(
+                            icon: const Icon(Icons.cancel, color: Colors.red),
+                            tooltip: tr('Rad etish'),
+                            onPressed: () async {
+                              await ApiService.post('/reports/day-closes/${p['id']}/approve', {'approve': false});
+                              setSt(() => pending.remove(p));
+                            },
+                          ),
+                        ]),
+                      )),
+                ],
+              ]),
+            ),
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx), child: Text(tr('Yopish'), style: TextStyle(color: AppTheme.textSoft))),
+          ],
+        ),
+      ),
+    );
+    if (mounted) _load();
+  }
+
   @override
   Widget build(BuildContext context) {
     return AnimatedBuilder(
@@ -676,6 +780,14 @@ class _CashboxViewState extends State<CashboxView> {
             icon: const Icon(Icons.remove, color: Colors.white),
             label: Text(tr('Pul chiqarish'),
                 style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+          ),
+          const SizedBox(width: 12),
+          FloatingActionButton(
+            heroTag: 'kunYopish',
+            backgroundColor: Colors.blueGrey,
+            tooltip: tr('Kun yakunlash (Z)'),
+            onPressed: _closeDay,
+            child: const Icon(Icons.event_available, color: Colors.white),
           ),
         ],
       ),
@@ -756,12 +868,46 @@ class _CashboxViewState extends State<CashboxView> {
                 const SizedBox(height: 10),
                 Row(
                   children: [
-                    _tabChip(tr('Tranzaksiyalar'), 0,
-                        _txFilter == 'all' ? txs.length : txs.where((t) => (t['kind']?.toString() ?? '') == _txFilter).length),
+                    _tabChip(tr('Tranzaksiyalar'), 0, _applyTxFilters(txs).length),
                     const SizedBox(width: 8),
                     _tabChip(tr('Qarzdorlar'), 1, debtors.length),
                   ],
                 ),
+                // To'lov usuli filtri (naqd/karta) + summa bo'yicha qidiruv — faqat tranzaksiyalar tabida
+                if (_tab == 0) ...[
+                  const SizedBox(height: 10),
+                  Row(children: [
+                    _methodChip(tr('Hammasi'), 'all'),
+                    const SizedBox(width: 6),
+                    _methodChip(tr('Naqd'), 'cash'),
+                    const SizedBox(width: 6),
+                    _methodChip(tr('Karta'), 'card'),
+                    const SizedBox(width: 10),
+                    Expanded(child: SizedBox(height: 38, child: TextField(
+                      controller: _amountCtrl,
+                      keyboardType: TextInputType.number,
+                      onChanged: (_) => setState(() {}),
+                      style: TextStyle(color: AppTheme.text, fontSize: 13),
+                      decoration: InputDecoration(
+                        isDense: true,
+                        hintText: tr('Summa bo\'yicha qidirish'),
+                        hintStyle: TextStyle(color: AppTheme.textSoft, fontSize: 12),
+                        prefixIcon: Icon(Icons.search, size: 16, color: AppTheme.textSoft),
+                        suffixIcon: _amountCtrl.text.isEmpty ? null : IconButton(
+                          icon: Icon(Icons.close, size: 15, color: AppTheme.textSoft),
+                          visualDensity: VisualDensity.compact,
+                          onPressed: () => setState(() => _amountCtrl.clear()),
+                        ),
+                        filled: true,
+                        fillColor: AppTheme.bg,
+                        contentPadding: const EdgeInsets.symmetric(horizontal: 8, vertical: 0),
+                        border: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: BorderSide(color: AppTheme.border)),
+                        enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: BorderSide(color: AppTheme.border)),
+                        focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: BorderSide(color: AppTheme.accent)),
+                      ),
+                    ))),
+                  ]),
+                ],
               ],
             ),
           ),
@@ -915,10 +1061,36 @@ class _CashboxViewState extends State<CashboxView> {
     );
   }
 
+  // Barcha filtrlar: kind (tushum/chiqim) + to'lov usuli (naqd/karta) + summa qidiruv
+  List _applyTxFilters(List txs) {
+    final q = _amountCtrl.text.trim();
+    return txs.where((t) {
+      if (_txFilter != 'all' && (t['kind']?.toString() ?? '') != _txFilter) return false;
+      if (_methodFilter != 'all' && (t['method']?.toString() ?? 'cash') != _methodFilter) return false;
+      if (q.isNotEmpty && !_d(t['amount']).round().toString().contains(q)) return false;
+      return true;
+    }).toList();
+  }
+
+  Widget _methodChip(String label, String key) {
+    final sel = _methodFilter == key;
+    return InkWell(
+      onTap: () => setState(() => _methodFilter = key),
+      borderRadius: BorderRadius.circular(16),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 6),
+        decoration: BoxDecoration(
+          color: sel ? AppTheme.accent : AppTheme.card,
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: sel ? AppTheme.accent : AppTheme.border),
+        ),
+        child: Text(label, style: TextStyle(color: sel ? Colors.white : AppTheme.text, fontSize: 12, fontWeight: FontWeight.w600)),
+      ),
+    );
+  }
+
   Widget _txList(List txs) {
-    final shown = _txFilter == 'all'
-        ? txs
-        : txs.where((t) => (t['kind']?.toString() ?? '') == _txFilter).toList();
+    final shown = _applyTxFilters(txs);
     if (shown.isEmpty) {
       return ListView(children: [
         const SizedBox(height: 100),

@@ -19,6 +19,18 @@ const TICKETS_DIR = path.join(__dirname, 'tickets');
 
 if (!fs.existsSync(TICKETS_DIR)) fs.mkdirSync(TICKETS_DIR, { recursive: true });
 
+// Har API so'roviga timeout — osilgan ulanish butun chek navbatini muzlatmasin.
+// (SSE oqimiga QO'LLANMAYDI — u uzun yashaydi.)
+async function fetchT(url, opts = {}, ms = 10000) {
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), ms);
+  try {
+    return await fetch(url, { ...opts, signal: ac.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 // ---- ESC/POS yordamchilari ----
 const ESC = '\x1B', GS = '\x1D', FS = '\x1C';
 const CMD = {
@@ -165,22 +177,35 @@ function buildCancelTicket(tk) {
 
 async function processCancel(tk) {
   const text = buildCancelTicket(tk);
-  if (tk.printer_ip) {
-    await sendToPrinter(tk.printer_ip, tk.printer_port || 9100, text);
-  } else if (tk.printer_name) {
-    await sendToUsb(tk.printer_name, text);
-  } else {
-    fs.writeFileSync(path.join(TICKETS_DIR, `cancel${tk.id}_order${tk.order_id}.txt`), text);
+  // Chop urinishini ALOHIDA try/catch qilamiz. Printer xato bersa /done chaqirilmay
+  // qolmasin — aks holda ticket "pending" qolib keyingi pollда DUBL ОТМЕНА chiqadi.
+  // Xato bo'lsa chekni tickets/*_XATO.txt ga backup qilib davom etamiz.
+  try {
+    if (tk.printer_ip) {
+      await sendToPrinter(tk.printer_ip, tk.printer_port || 9100, text);
+    } else if (tk.printer_name) {
+      await sendToUsb(tk.printer_name, text);
+    } else {
+      fs.writeFileSync(path.join(TICKETS_DIR, `cancel${tk.id}_order${tk.order_id}.txt`), text);
+    }
+    console.log(`[cancel] ОТМЕНА zakaz #${tk.order_id} -> ${tk.station_name}`);
+  } catch (e) {
+    try {
+      const file = path.join(TICKETS_DIR, `cancel${tk.id}_order${tk.order_id}_XATO.txt`);
+      fs.writeFileSync(file, text);
+      console.log(`[cancel] ОТМЕНА zakaz #${tk.order_id} -> ${tk.station_name} PRINTER XATO (${e.message}) — backup: ${path.basename(file)}`);
+    } catch (e2) {
+      console.log(`[cancel] ОТМЕНА zakaz #${tk.order_id} -> ${tk.station_name} PRINTER XATO (${e.message}), backup ham xato: ${e2.message}`);
+    }
   }
-  console.log(`[cancel] ОТМЕНА zakaz #${tk.order_id} -> ${tk.station_name}`);
-  const r = await fetch(`${API_URL}/api/print/cancels/${tk.id}/done`, {
+  const r = await fetchT(`${API_URL}/api/print/cancels/${tk.id}/done`, {
     method: 'POST', headers: { 'x-print-token': TOKEN },
   });
   if (!r.ok) throw new Error('cancel done xato: ' + r.status);
 }
 
 async function pollCancels() {
-  const r = await fetch(`${API_URL}/api/print/cancels/pending`, { headers: { 'x-print-token': TOKEN } });
+  const r = await fetchT(`${API_URL}/api/print/cancels/pending`, { headers: { 'x-print-token': TOKEN } });
   if (!r.ok) { console.log('[cancel] pending xato:', r.status); return; }
   const tickets = await r.json();
   for (const tk of tickets) {
@@ -248,32 +273,49 @@ function sendToPrinter(ip, port, text) {
 }
 
 async function processOrder(order) {
+  // Har stansiyani ALOHIDA ishlaymiz. Bitta stansiya printeri xato bersa butun loop
+  // UZILMASIN — aks holda /done chaqirilmay qoladi va keyingi pollда ALLAQACHON chek
+  // chiqargan sog' stansiyalarga QAYTA chek chiqadi (dubl). Xato stansiya cheki
+  // yo'qolmasligi uchun uni tickets/*_XATO.txt ga backup qilamiz va davom etamiz.
   for (const station of order.stations) {
-    if (station.printer_ip) {
-      // Tarmoq (LAN) printeri
-      await sendToPrinter(station.printer_ip, station.printer_port || 9100, buildTicket(order, station));
-      console.log(`[print] zakaz #${order.order_id} -> ${station.station_name} (IP ${station.printer_ip})`);
-    } else if (station.printer_name) {
-      // USB termal printer — xom ESC/POS (qalin shrift + avtokesish)
-      await sendToUsb(station.printer_name, buildTicket(order, station));
-      console.log(`[print] zakaz #${order.order_id} -> ${station.station_name} (USB: ${station.printer_name})`);
-    } else {
-      // Printer belgilanmagan — faylga yozamiz (test)
-      const file = path.join(TICKETS_DIR, `order${order.order_id}_${station.station_name}.txt`);
-      fs.writeFileSync(file, buildPlain(order, station));
-      console.log(`[print] zakaz #${order.order_id} -> ${station.station_name} (FAYL: ${path.basename(file)})`);
+    try {
+      if (station.printer_ip) {
+        // Tarmoq (LAN) printeri
+        await sendToPrinter(station.printer_ip, station.printer_port || 9100, buildTicket(order, station));
+        console.log(`[print] zakaz #${order.order_id} -> ${station.station_name} (IP ${station.printer_ip})`);
+      } else if (station.printer_name) {
+        // USB termal printer — xom ESC/POS (qalin shrift + avtokesish)
+        await sendToUsb(station.printer_name, buildTicket(order, station));
+        console.log(`[print] zakaz #${order.order_id} -> ${station.station_name} (USB: ${station.printer_name})`);
+      } else {
+        // Printer belgilanmagan — faylga yozamiz (test)
+        const file = path.join(TICKETS_DIR, `order${order.order_id}_${station.station_name}.txt`);
+        fs.writeFileSync(file, buildPlain(order, station));
+        console.log(`[print] zakaz #${order.order_id} -> ${station.station_name} (FAYL: ${path.basename(file)})`);
+      }
+    } catch (e) {
+      // Bu stansiya printeri xato berdi — chekni backup faylga yozib davom etamiz (dubl oldini olish)
+      try {
+        const file = path.join(TICKETS_DIR, `order${order.order_id}_${station.station_name}_XATO.txt`);
+        fs.writeFileSync(file, buildPlain(order, station));
+        console.log(`[print] zakaz #${order.order_id} -> ${station.station_name} PRINTER XATO (${e.message}) — backup: ${path.basename(file)}`);
+      } catch (e2) {
+        console.log(`[print] zakaz #${order.order_id} -> ${station.station_name} PRINTER XATO (${e.message}), backup ham xato: ${e2.message}`);
+      }
     }
   }
-  // Hammasi muvaffaqiyatli bo'lsa — chop etildi deb belgilaymiz
-  const r = await fetch(`${API_URL}/api/print/${order.order_id}/done`, {
+  // Barcha stansiyalar chop etildi/saqlandi — AYNAN chop etilgan qatorlarni (item_ids) belgilaymiz.
+  // Shu bilan chop payti qo'shilgan yangi taom jim yo'qolmaydi (keyingi siklда chekiga chiqadi).
+  const r = await fetchT(`${API_URL}/api/print/${order.order_id}/done`, {
     method: 'POST',
-    headers: { 'x-print-token': TOKEN },
+    headers: { 'x-print-token': TOKEN, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ item_ids: order.item_ids || [] }),
   });
   if (!r.ok) throw new Error('done belgilashda xato: ' + r.status);
 }
 
 async function pollOnce() {
-  const r = await fetch(`${API_URL}/api/print/pending`, { headers: { 'x-print-token': TOKEN } });
+  const r = await fetchT(`${API_URL}/api/print/pending`, { headers: { 'x-print-token': TOKEN } });
   if (!r.ok) { console.log('[print] pending xato:', r.status); return; }
   const orders = await r.json();
   for (const order of orders) {
@@ -288,23 +330,36 @@ async function pollOnce() {
 // Mijoz chekini (bill) bitta printerga chiqarish
 async function processBill(bill) {
   const escpos = buildBill(bill);
-  if (bill.printer_ip) {
-    await sendToPrinter(bill.printer_ip, bill.printer_port || 9100, escpos);
-  } else if (bill.printer_name) {
-    await sendToUsb(bill.printer_name, escpos);
-  } else {
-    const file = path.join(TICKETS_DIR, `bill_order${bill.order_id}.txt`);
-    fs.writeFileSync(file, escpos);
+  // Chop urinishini ALOHIDA try/catch qilamiz. Printer xato bersa /done chaqirilmay
+  // qolmasin — aks holda bill "pending" qolib keyingi pollда DUBL chek chiqadi.
+  // Xato bo'lsa chekni tickets/*_XATO.txt ga backup qilib davom etamiz.
+  try {
+    if (bill.printer_ip) {
+      await sendToPrinter(bill.printer_ip, bill.printer_port || 9100, escpos);
+    } else if (bill.printer_name) {
+      await sendToUsb(bill.printer_name, escpos);
+    } else {
+      const file = path.join(TICKETS_DIR, `bill_order${bill.order_id}.txt`);
+      fs.writeFileSync(file, escpos);
+    }
+    console.log(`[bill] zakaz #${bill.order_id} cheki chiqdi (jami ${bill.total_amount})`);
+  } catch (e) {
+    try {
+      const file = path.join(TICKETS_DIR, `bill_order${bill.order_id}_XATO.txt`);
+      fs.writeFileSync(file, escpos);
+      console.log(`[bill] zakaz #${bill.order_id} PRINTER XATO (${e.message}) — backup: ${path.basename(file)}`);
+    } catch (e2) {
+      console.log(`[bill] zakaz #${bill.order_id} PRINTER XATO (${e.message}), backup ham xato: ${e2.message}`);
+    }
   }
-  console.log(`[bill] zakaz #${bill.order_id} cheki chiqdi (jami ${bill.total_amount})`);
-  const r = await fetch(`${API_URL}/api/print/bills/${bill.order_id}/done`, {
+  const r = await fetchT(`${API_URL}/api/print/bills/${bill.order_id}/done`, {
     method: 'POST', headers: { 'x-print-token': TOKEN },
   });
   if (!r.ok) throw new Error('bill done xato: ' + r.status);
 }
 
 async function pollBills() {
-  const r = await fetch(`${API_URL}/api/print/bills/pending`, { headers: { 'x-print-token': TOKEN } });
+  const r = await fetchT(`${API_URL}/api/print/bills/pending`, { headers: { 'x-print-token': TOKEN } });
   if (!r.ok) { console.log('[bill] pending xato:', r.status); return; }
   const bills = await r.json();
   for (const bill of bills) {

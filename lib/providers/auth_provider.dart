@@ -34,6 +34,13 @@ class AuthProvider extends ChangeNotifier {
         _user = Map<String, dynamic>.from(response['user']);
         final prefs = await SharedPreferences.getInstance();
         await prefs.setString('token', _token!);
+        // user_id va user_role ni saqlash — inventar created_by va biometrik kirish
+        // fallback shulardan o'qiydi (aks holda created_by 1 ga qotib qolardi).
+        final dynamic uid = _user!['id'];
+        final int? uidInt = uid is int ? uid : int.tryParse('$uid');
+        if (uidInt != null) await prefs.setInt('user_id', uidInt);
+        final dynamic r = _user!['role'];
+        if (r is String && r.isNotEmpty) await prefs.setString('user_role', r);
         notifyListeners();
         return null;
       }

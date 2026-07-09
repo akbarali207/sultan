@@ -18,6 +18,26 @@ class ApiException implements Exception {
 class ApiService {
   static const Duration _timeout = Duration(seconds: 15);
 
+  /// Token muddati o'tganda (HTTP 401) chaqiriladi — ilova login ekraniga qaytadi.
+  /// main.dart da o'rnatiladi. Shu bo'lmasa 401 da ro'yxatlar jimgina bo'sh qolardi.
+  static void Function()? onUnauthorized;
+  static bool _unauthHandling = false;
+
+  static Future<void> _fireUnauthorized() async {
+    if (_unauthHandling || onUnauthorized == null) return;
+    _unauthHandling = true;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      // Faqat SESSIYA bor edi (token) bo'lsa login ga qaytaramiz —
+      // login urinishidagi 401 (parol xato) ni chalg'itmaymiz.
+      if (prefs.getString('token') != null) {
+        await prefs.remove('token');
+        onUnauthorized!();
+      }
+    } catch (_) {}
+    _unauthHandling = false;
+  }
+
   static Future<String?> getToken() async {
     final prefs = await SharedPreferences.getInstance();
     return prefs.getString('token');
@@ -43,6 +63,68 @@ class ApiService {
     return '${h(0)}${h(1)}${h(2)}${h(3)}-${h(4)}${h(5)}-${h(6)}${h(7)}-${h(8)}${h(9)}-${h(10)}${h(11)}${h(12)}${h(13)}${h(14)}${h(15)}';
   }
 
+  // ==== SERVER MANZILI: lokal (Wi-Fi) <-> internet AVTOMATIK almashinuvi ====
+  // Restoran Wi-Fi'sida lokal POS-PC topilса — internet shart emas.
+  static const String _localKey = 'local_server_url';
+  static String _mode = 'remote'; // 'local' | 'remote' — UI ko'rsatishi uchun
+  static String get mode => _mode;
+
+  /// Saqlangan lokal server manzili (masalan http://192.168.1.10:3000/api) yoki null.
+  static Future<String?> getLocalServer() async {
+    final p = await SharedPreferences.getInstance();
+    final v = p.getString(_localKey);
+    return (v != null && v.trim().isNotEmpty) ? v.trim() : null;
+  }
+
+  /// Lokal server manzilini saqlaydi (bo'sh -> o'chiradi) va qayta aniqlaydi.
+  static Future<void> setLocalServer(String? raw) async {
+    final p = await SharedPreferences.getInstance();
+    if (raw == null || raw.trim().isEmpty) {
+      await p.remove(_localKey);
+    } else {
+      await p.setString(_localKey, normalizeServer(raw));
+    }
+    await resolveBase();
+  }
+
+  /// '192.168.1.10' | '192.168.1.10:3000' | 'http://...' -> 'http://192.168.1.10:3000/api'
+  static String normalizeServer(String raw) {
+    var s = raw.trim();
+    if (!s.startsWith('http://') && !s.startsWith('https://')) s = 'http://$s';
+    final u = Uri.tryParse(s);
+    if (u != null && u.host.isNotEmpty) {
+      final port = u.hasPort ? u.port : 3000;
+      s = '${u.scheme}://${u.host}:$port';
+    }
+    if (!s.endsWith('/api')) s = '$s/api';
+    return s;
+  }
+
+  /// Ishga tushganda va tarmoq xatosida chaqiriladi. Lokal manzil javob berса —
+  /// lokalga o'tadi (internetsiz ham ishlaydi), aks holda — internet (remote).
+  static Future<void> resolveBase() async {
+    final local = await getLocalServer();
+    if (local == null) {
+      AppConstants.baseUrl = AppConstants.remoteBaseUrl;
+      _mode = 'remote';
+      return;
+    }
+    final ok = await _probe(local);
+    AppConstants.baseUrl = ok ? local : AppConstants.remoteBaseUrl;
+    _mode = ok ? 'local' : 'remote';
+  }
+
+  static Future<bool> _probe(String base) async {
+    try {
+      final r = await http
+          .get(Uri.parse('$base/health'))
+          .timeout(const Duration(milliseconds: 1500));
+      return r.statusCode == 200;
+    } catch (_) {
+      return false;
+    }
+  }
+
   /// Javobni tekshirib qaytaradi:
   ///  - 2xx-4xx: JSON body qaytadi (4xx da UI `message` maydonini ko'rsatadi)
   ///  - 5xx yoki JSON bo'lmagan javob: ApiException
@@ -60,6 +142,11 @@ class ApiService {
           : 'Server xatosi (HTTP ${response.statusCode})';
       throw ApiException(response.statusCode, msg);
     }
+    // Sessiya tugadi/token yaroqsiz — login ga qaytaramiz (fire-and-forget).
+    // Body baribir qaytadi, chaqiruvchilar crash bo'lmaydi.
+    if (response.statusCode == 401) {
+      _fireUnauthorized();
+    }
     return body;
   }
 
@@ -75,15 +162,19 @@ class ApiService {
       rethrow;
     } catch (_) {
       if (!retryOnce) {
-        throw ApiException(null, 'Server bilan aloqa yo\'q — internetni tekshiring');
+        resolveBase(); // keyingi so'rovga ishlaydigan manzilni fon rejimida tayyorlaymiz
+        throw ApiException(null, 'Serverga ulanib bo\'lmadi — Wi-Fi yoki internetni tekshiring');
       }
-      await Future.delayed(const Duration(seconds: 1));
+      // Lokal <-> internet AVTOMATIK almashinuvi: joriy manzil ishlamadi,
+      // ishlaydiganini topib (lokal yoki internet), qayta urinamiz.
+      await resolveBase();
+      await Future.delayed(const Duration(milliseconds: 300));
       try {
         return _decode(await request().timeout(_timeout));
       } on ApiException {
         rethrow;
       } catch (_) {
-        throw ApiException(null, 'Server bilan aloqa yo\'q — internetni tekshiring');
+        throw ApiException(null, 'Serverga ulanib bo\'lmadi — Wi-Fi yoki internetni tekshiring');
       }
     }
   }

@@ -13,6 +13,7 @@ import '../../core/api_service.dart';
 import '../../core/constants.dart';
 import '../../core/app_theme.dart';
 import '../../core/lang.dart';
+import 'analytics_page.dart';
 import '../../widgets/table_with_chairs.dart';
 import '../../widgets/orders_view.dart';
 import '../../widgets/cashbox_view.dart';
@@ -28,6 +29,59 @@ class AdminScreen extends StatefulWidget {
 
 class _AdminScreenState extends State<AdminScreen> {
   int _selectedIndex = 0;
+  bool _frozen = false; // super-admin STOP holati (banner + tugma uchun)
+
+  @override
+  void initState() {
+    super.initState();
+    _loadSystemState();
+  }
+
+  Future<void> _loadSystemState() async {
+    try {
+      final r = await ApiService.get('/system/state');
+      if (mounted && r is Map) setState(() => _frozen = r['frozen'] == true);
+    } catch (_) {}
+  }
+
+  // Super-admin STOP / ochish
+  Future<void> _toggleFreeze(bool freeze) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        backgroundColor: AppTheme.card,
+        title: Text(freeze ? tr('Tizimni TO\'XTATISH?') : tr('Tizimni ochish?'), style: TextStyle(color: AppTheme.text)),
+        content: Text(
+            freeze
+                ? tr('Barcha yangi zakaz va to\'lov bloklanadi. Faqat super-admin qayta ocha oladi.')
+                : tr('Tizim yana ishlaydi — zakaz va to\'lov qabul qilinadi.'),
+            style: TextStyle(color: AppTheme.textSoft)),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context, false), child: Text(tr('Bekor'), style: TextStyle(color: AppTheme.textSoft))),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(backgroundColor: freeze ? Colors.red : Colors.green),
+            onPressed: () => Navigator.pop(context, true),
+            child: Text(freeze ? tr('TO\'XTATISH') : tr('Ochish'), style: const TextStyle(color: Colors.white)),
+          ),
+        ],
+      ),
+    );
+    if (ok != true) return;
+    try {
+      final r = await ApiService.post('/system/freeze', {'frozen': freeze});
+      if (!mounted) return;
+      if (r is Map && r['ok'] == true) {
+        setState(() => _frozen = r['frozen'] == true);
+      } else if (r is Map && r['message'] != null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text(r['message'].toString()), backgroundColor: Colors.red));
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$e'), backgroundColor: Colors.red));
+      }
+    }
+  }
 
   final List<Map<String, dynamic>> _menuItems = [
     {'icon': Icons.dashboard, 'label': 'Bosh sahifa'},
@@ -60,6 +114,21 @@ class _AdminScreenState extends State<AdminScreen> {
         backgroundColor: AppTheme.card,
         title: Text(tr(_menuItems[_selectedIndex]['label']), style: TextStyle(color: AppTheme.text)),
         actions: [
+          // Kengaytirilgan analitika — FAQAT direktor (+ guest super-admin) ko'radi
+          if (auth.role == 'director' || auth.role == 'guest')
+            IconButton(
+              tooltip: tr('Analitika'),
+              icon: Icon(Icons.insights, color: AppTheme.accent),
+              onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const AnalyticsPage())),
+            ),
+          // Super-admin (guest) — STOP / ochish tugmasi
+          if (auth.role == 'guest')
+            IconButton(
+              tooltip: _frozen ? tr('Ochish') : tr('STOP'),
+              icon: Icon(_frozen ? Icons.play_circle_fill : Icons.stop_circle,
+                  color: _frozen ? Colors.green : Colors.red, size: 28),
+              onPressed: () => _toggleFreeze(!_frozen),
+            ),
           // Til almashtirgich UZ / RU
           TextButton(
             onPressed: () => Lang.instance.toggle(),
@@ -84,7 +153,18 @@ class _AdminScreenState extends State<AdminScreen> {
           ),
         ],
       ),
-      body: _buildBody(),
+      body: Column(children: [
+        if (_frozen)
+          Container(
+            width: double.infinity,
+            color: Colors.red,
+            padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 12),
+            child: Text(tr('⛔ TIZIM TO\'XTATILGAN — yangi zakaz va to\'lov bloklangan'),
+                textAlign: TextAlign.center,
+                style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+          ),
+        Expanded(child: _buildBody()),
+      ]),
       bottomNavigationBar: BottomNavigationBar(
         currentIndex: _selectedIndex,
         onTap: (index) => setState(() => _selectedIndex = index),
@@ -2991,6 +3071,19 @@ class _MenuSectionState extends State<MenuSection> with SingleTickerProviderStat
                   ),
                   const SizedBox(width: 6),
                   GestureDetector(
+                    onTap: () => _confirmMergeIngredient(ing),
+                    child: Container(
+                      margin: const EdgeInsets.only(top: 4),
+                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                      decoration: BoxDecoration(
+                        color: Colors.orange.withValues(alpha: 0.18),
+                        borderRadius: BorderRadius.circular(4),
+                      ),
+                      child: Icon(Icons.call_merge, color: Colors.orange, size: 16),
+                    ),
+                  ),
+                  const SizedBox(width: 6),
+                  GestureDetector(
                     onTap: () => _confirmDeleteIngredient(ing),
                     child: Container(
                       margin: const EdgeInsets.only(top: 4),
@@ -3054,6 +3147,104 @@ class _MenuSectionState extends State<MenuSection> with SingleTickerProviderStat
     );
   }
 
+  // DUBLIKATNI BIRLASHTIRISH (merge): "ing" ni boshqa mahsulot ichiga qo'shish.
+  // Ishlatilayotgan dublikatni o'chirib bo'lmaydi — shu yo'l bilan tozalanadi.
+  void _confirmMergeIngredient(Map<String, dynamic> ing) {
+    final targets = _ingredients.where((x) => x['id'] != ing['id']).toList();
+    if (targets.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(tr('Birlashtirish uchun boshqa mahsulot yo\'q'))));
+      return;
+    }
+    final searchC = TextEditingController();
+    showDialog(
+      context: context,
+      builder: (dctx) => StatefulBuilder(builder: (dctx, setSt) {
+        final q = searchC.text.trim().toLowerCase();
+        final shown = q.isEmpty ? targets : targets.where((x) => (x['name']?.toString() ?? '').toLowerCase().contains(q)).toList();
+        return AlertDialog(
+          backgroundColor: AppTheme.card,
+          title: Text('«${ing['name']}» — ${tr('birlashtirish')}', style: TextStyle(color: AppTheme.text, fontSize: 15)),
+          content: SizedBox(
+            width: 360,
+            child: Column(mainAxisSize: MainAxisSize.min, children: [
+              Text(tr('Qaysi mahsulot ichiga qo\'shilsin? Retseptlar o\'shanga o\'tadi, qoldiq qo\'shiladi (minus saqlanadi), bu yozuv o\'chadi.'),
+                  style: TextStyle(color: AppTheme.textSoft, fontSize: 12)),
+              const SizedBox(height: 10),
+              TextField(
+                controller: searchC,
+                onChanged: (_) => setSt(() {}),
+                style: TextStyle(color: AppTheme.text),
+                decoration: InputDecoration(
+                  hintText: tr('Qidirish...'),
+                  hintStyle: TextStyle(color: AppTheme.textSoft),
+                  prefixIcon: Icon(Icons.search, size: 18, color: AppTheme.textSoft),
+                  isDense: true,
+                  enabledBorder: OutlineInputBorder(borderSide: BorderSide(color: AppTheme.border)),
+                  focusedBorder: OutlineInputBorder(borderSide: BorderSide(color: AppTheme.accent)),
+                ),
+              ),
+              const SizedBox(height: 8),
+              SizedBox(
+                height: 280,
+                child: shown.isEmpty
+                    ? Center(child: Text(tr('Natija topilmadi'), style: TextStyle(color: AppTheme.textSoft)))
+                    : ListView.builder(
+                        itemCount: shown.length,
+                        itemBuilder: (_, i) {
+                          final t = shown[i] as Map<String, dynamic>;
+                          return ListTile(
+                            dense: true,
+                            title: Text(t['name']?.toString() ?? '', style: TextStyle(color: AppTheme.text, fontSize: 13)),
+                            subtitle: Text('${tr('Qoldiq')}: ${t['stock_quantity']}', style: TextStyle(color: AppTheme.textSoft, fontSize: 11)),
+                            trailing: Icon(Icons.call_merge, color: Colors.orange, size: 18),
+                            onTap: () { Navigator.pop(dctx); _doMerge(ing, t); },
+                          );
+                        },
+                      ),
+              ),
+            ]),
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(dctx), child: Text(tr('Bekor'), style: TextStyle(color: AppTheme.textSoft))),
+          ],
+        );
+      }),
+    );
+  }
+
+  Future<void> _doMerge(Map<String, dynamic> src, Map<String, dynamic> target) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (cctx) => AlertDialog(
+        backgroundColor: AppTheme.card,
+        title: Text(tr('Tasdiqlang'), style: TextStyle(color: AppTheme.text)),
+        content: Text('«${src['name']}» → «${target['name']}»\n\n${tr('Birlashtirilsinmi? Ortga qaytarib bo\'lmaydi.')}',
+            style: TextStyle(color: AppTheme.textSoft)),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(cctx, false), child: Text(tr('Bekor'), style: TextStyle(color: AppTheme.textSoft))),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.orange),
+            onPressed: () => Navigator.pop(cctx, true),
+            child: Text(tr('Birlashtirish'), style: const TextStyle(color: Colors.white)),
+          ),
+        ],
+      ),
+    );
+    if (ok != true) return;
+    try {
+      final res = await ApiService.post('${AppConstants.stock}/${src['id']}/merge', {'target_id': target['id']});
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text((res is Map ? res['message'] : null)?.toString() ?? tr('Birlashtirildi')),
+          backgroundColor: Colors.green));
+      _loadData();
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('${tr('Xato')}: $e'), backgroundColor: Colors.red));
+      }
+    }
+  }
+
   // P/F TAYYORLASH — oshpaz necha birlik tayyorlaganini kiritadi:
   // P/F qoldig'i +N, retseptidagi xom masaliqlar -N*brutto (backend hisoblaydi)
   void _showProducePfDialog(Map<String, dynamic> ing) {
@@ -3100,7 +3291,7 @@ class _MenuSectionState extends State<MenuSection> with SingleTickerProviderStat
                 final res = await ApiService.post('${AppConstants.stock}/produce', {
                   'ingredient_id': ing['id'],
                   'quantity': qty,
-                });
+                }, idempotencyKey: ApiService.newIdempotencyKey());
                 nav.pop();
                 if (res is Map && res['ok'] == true) {
                   messenger.showSnackBar(SnackBar(
@@ -3954,6 +4145,7 @@ class _StaffSectionState extends State<StaffSection> {
     {'value': 'hourly', 'label': tr('Soatlik')},
     {'value': 'percent', 'label': tr('Savdodan foiz (%)')},
     {'value': 'percent_total', 'label': tr('Jami tushumdan foiz (%)')},
+    {'value': 'piece', 'label': tr('Dona uchun (sdelnaya)')},
   ];
 
   @override
@@ -4107,6 +4299,8 @@ class _StaffSectionState extends State<StaffSection> {
     final passwordController = TextEditingController();
     final salaryController = TextEditingController();
     final percentController = TextEditingController();
+    final tierThresholdController = TextEditingController(); // progressiv: kunlik chegara
+    final tierValueController = TextEditingController();     // progressiv: oshgan foiz
     final faceIdController = TextEditingController();
     final lateFineController = TextEditingController(text: '0');
     final salaryDayController = TextEditingController(text: '1');
@@ -4191,6 +4385,22 @@ class _StaffSectionState extends State<StaffSection> {
                 ] else ...[
                   _buildTextField(salaryController, tr('Maosh miqdori (so\'m)'), Icons.monetization_on, isNumber: true),
                 ],
+                if (selectedSalaryType == 'percent') ...[
+                  const SizedBox(height: 10),
+                  Text(tr('Progressiv (ixtiyoriy): kunlik savdo chegaradan oshsa — oshgan foiz ishlaydi'),
+                      style: TextStyle(color: AppTheme.textSoft, fontSize: 11)),
+                  const SizedBox(height: 6),
+                  Row(children: [
+                    Expanded(child: _buildTextField(tierThresholdController, tr('Kunlik chegara (so\'m)'), Icons.trending_up, isNumber: true)),
+                    const SizedBox(width: 8),
+                    Expanded(child: _buildTextField(tierValueController, tr('Oshgan foiz (%)'), Icons.percent, isNumber: true)),
+                  ]),
+                ],
+                if (selectedSalaryType == 'piece') ...[
+                  const SizedBox(height: 8),
+                  Text(tr('* Dona stavkalarni xodimni saqlagach — tahrirlashda "Dona stavkalar" tugmasidan qo\'shasiz'),
+                      style: TextStyle(color: AppTheme.textSoft, fontSize: 11)),
+                ],
                 const SizedBox(height: 12),
                 // Ish vaqti (smena)
                 Row(
@@ -4246,6 +4456,8 @@ class _StaffSectionState extends State<StaffSection> {
                     'face_id': faceIdController.text.isEmpty ? null : faceIdController.text,
                     'salary_type': selectedSalaryType,
                     'salary_value': salaryValue,
+                    'salary_tier_threshold': double.tryParse(tierThresholdController.text) ?? 0,
+                    'salary_tier_value': double.tryParse(tierValueController.text) ?? 0,
                     'work_start': workStart,
                     'work_end': workEnd,
                     'late_fine_per_minute': double.tryParse(lateFineController.text) ?? 0,
@@ -4306,6 +4518,14 @@ class _StaffSectionState extends State<StaffSection> {
     );
     final percentController = TextEditingController(
       text: selectedSalaryType.startsWith('percent') ? (user['salary_value'] ?? 0).toString() : '',
+    );
+    final tierThresholdController = TextEditingController(
+      text: ((double.tryParse(user['salary_tier_threshold']?.toString() ?? '0') ?? 0) > 0)
+          ? (double.tryParse(user['salary_tier_threshold'].toString()) ?? 0).toStringAsFixed(0) : '',
+    );
+    final tierValueController = TextEditingController(
+      text: ((double.tryParse(user['salary_tier_value']?.toString() ?? '0') ?? 0) > 0)
+          ? (double.tryParse(user['salary_tier_value'].toString()) ?? 0).toStringAsFixed(0) : '',
     );
 
     showDialog(
@@ -4379,6 +4599,29 @@ class _StaffSectionState extends State<StaffSection> {
                 ] else ...[
                   _buildTextField(salaryController, tr('Maosh miqdori (so\'m)'), Icons.monetization_on, isNumber: true),
                 ],
+                if (selectedSalaryType == 'percent') ...[
+                  const SizedBox(height: 10),
+                  Text(tr('Progressiv (ixtiyoriy): kunlik savdo chegaradan oshsa — oshgan foiz ishlaydi'),
+                      style: TextStyle(color: AppTheme.textSoft, fontSize: 11)),
+                  const SizedBox(height: 6),
+                  Row(children: [
+                    Expanded(child: _buildTextField(tierThresholdController, tr('Kunlik chegara (so\'m)'), Icons.trending_up, isNumber: true)),
+                    const SizedBox(width: 8),
+                    Expanded(child: _buildTextField(tierValueController, tr('Oshgan foiz (%)'), Icons.percent, isNumber: true)),
+                  ]),
+                ],
+                if (selectedSalaryType == 'piece') ...[
+                  const SizedBox(height: 8),
+                  SizedBox(
+                    width: double.infinity,
+                    child: OutlinedButton.icon(
+                      onPressed: () => _showPieceRatesDialog(user['id'] as int, user['full_name']?.toString() ?? ''),
+                      icon: Icon(Icons.restaurant_menu, size: 18, color: AppTheme.accent),
+                      label: Text(tr('Dona stavkalar (taomlar)'), style: TextStyle(color: AppTheme.accent)),
+                      style: OutlinedButton.styleFrom(side: BorderSide(color: AppTheme.border)),
+                    ),
+                  ),
+                ],
                 const SizedBox(height: 12),
                 Row(
                   children: [
@@ -4421,6 +4664,8 @@ class _StaffSectionState extends State<StaffSection> {
                   'face_id': faceIdController.text.isEmpty ? null : faceIdController.text,
                   'salary_type': selectedSalaryType,
                   'salary_value': salaryValue,
+                  'salary_tier_threshold': double.tryParse(tierThresholdController.text) ?? 0,
+                  'salary_tier_value': double.tryParse(tierValueController.text) ?? 0,
                   'is_active': user['is_active'] ?? true,
                   'work_start': workStart,
                   'work_end': workEnd,
@@ -4452,6 +4697,140 @@ class _StaffSectionState extends State<StaffSection> {
     );
   }
 
+  // Sdelnaya: xodim uchun taomlarga 1-dona stavkasi belgilash (POST /reports/piece-rates)
+  Future<void> _showPieceRatesDialog(int userId, String userName) async {
+    List<dynamic> menu = [];
+    final Map<int, TextEditingController> rateCtrls = {};
+    String search = '';
+    try {
+      final m = await ApiService.get(AppConstants.menuItems);
+      menu = (m is List) ? m : [];
+      final existing = await ApiService.get('/reports/piece-rates?user_id=$userId');
+      final Map<int, num> exMap = {};
+      if (existing is List) {
+        for (final e in existing) {
+          final mid = (e['menu_item_id'] as num?)?.toInt();
+          if (mid != null) exMap[mid] = (e['rate'] as num?) ?? 0;
+        }
+      }
+      for (final it in menu) {
+        final id = (it['id'] as num?)?.toInt();
+        if (id == null) continue;
+        rateCtrls[id] = TextEditingController(
+          text: (exMap[id] != null && exMap[id]! > 0) ? exMap[id]!.toStringAsFixed(0) : '',
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('${tr('Xato')}: $e'), backgroundColor: Colors.red));
+      }
+      return;
+    }
+    if (!mounted) return;
+    await showDialog(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setSt) {
+          final filtered = menu.where((it) => search.isEmpty ||
+              (it['name']?.toString().toLowerCase() ?? '').contains(search.toLowerCase())).toList();
+          return AlertDialog(
+            backgroundColor: AppTheme.card,
+            title: Text('${tr('Dona stavkalar')}: $userName', style: TextStyle(color: AppTheme.text, fontSize: 16)),
+            content: SizedBox(
+              width: 420,
+              child: Column(mainAxisSize: MainAxisSize.min, children: [
+                Text(tr('Har taom uchun 1 dona stavkasi (so\'m). Bo\'sh = hisoblanmaydi.'),
+                    style: TextStyle(color: AppTheme.textSoft, fontSize: 11.5)),
+                const SizedBox(height: 8),
+                TextField(
+                  onChanged: (v) => setSt(() => search = v),
+                  style: TextStyle(color: AppTheme.text),
+                  decoration: InputDecoration(
+                    hintText: tr('Qidirish...'),
+                    hintStyle: TextStyle(color: AppTheme.textSoft),
+                    prefixIcon: Icon(Icons.search, color: AppTheme.textSoft, size: 20),
+                    isDense: true,
+                    enabledBorder: OutlineInputBorder(borderSide: BorderSide(color: AppTheme.border)),
+                    focusedBorder: OutlineInputBorder(borderSide: BorderSide(color: AppTheme.accent)),
+                  ),
+                ),
+                const SizedBox(height: 8),
+                SizedBox(
+                  height: 340,
+                  width: 420,
+                  child: filtered.isEmpty
+                      ? Center(child: Text(tr('Taom yo\'q'), style: TextStyle(color: AppTheme.textSoft)))
+                      : ListView.builder(
+                          itemCount: filtered.length,
+                          itemBuilder: (_, i) {
+                            final it = filtered[i];
+                            final id = (it['id'] as num).toInt();
+                            return Padding(
+                              padding: const EdgeInsets.symmetric(vertical: 4),
+                              child: Row(children: [
+                                Expanded(
+                                    child: Text(it['name']?.toString() ?? '',
+                                        maxLines: 1, overflow: TextOverflow.ellipsis,
+                                        style: TextStyle(color: AppTheme.text, fontSize: 13))),
+                                const SizedBox(width: 8),
+                                SizedBox(
+                                  width: 120,
+                                  child: TextField(
+                                    controller: rateCtrls[id],
+                                    keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                                    style: TextStyle(color: AppTheme.text, fontSize: 13),
+                                    decoration: InputDecoration(
+                                      hintText: tr('stavka'),
+                                      hintStyle: TextStyle(color: AppTheme.textSoft, fontSize: 12),
+                                      isDense: true,
+                                      enabledBorder: OutlineInputBorder(borderSide: BorderSide(color: AppTheme.border)),
+                                      focusedBorder: OutlineInputBorder(borderSide: BorderSide(color: AppTheme.accent)),
+                                    ),
+                                  ),
+                                ),
+                              ]),
+                            );
+                          },
+                        ),
+                ),
+              ]),
+            ),
+            actions: [
+              TextButton(onPressed: () => Navigator.pop(ctx),
+                  child: Text(tr('Bekor'), style: TextStyle(color: AppTheme.textSoft))),
+              ElevatedButton(
+                style: ElevatedButton.styleFrom(backgroundColor: AppTheme.accent),
+                onPressed: () async {
+                  final rates = <Map<String, dynamic>>[];
+                  rateCtrls.forEach((id, c) {
+                    final r = double.tryParse(c.text.trim()) ?? 0;
+                    if (r > 0) rates.add({'menu_item_id': id, 'rate': r});
+                  });
+                  try {
+                    await ApiService.post('/reports/piece-rates', {'user_id': userId, 'rates': rates});
+                    if (ctx.mounted) Navigator.pop(ctx);
+                    if (mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                          content: Text('${tr('Saqlandi')}: ${rates.length} ${tr('taom')}'),
+                          backgroundColor: Colors.green));
+                    }
+                  } catch (e) {
+                    if (ctx.mounted) {
+                      ScaffoldMessenger.of(ctx).showSnackBar(
+                          SnackBar(content: Text('${tr('Xato')}: $e'), backgroundColor: Colors.red));
+                    }
+                  }
+                },
+                child: Text(tr('Saqlash'), style: TextStyle(color: AppTheme.onAccent)),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+  }
+
   String _getSalaryTypeLabel(String type) {
     switch (type) {
       case 'monthly': return tr('Oylik');
@@ -4459,6 +4838,7 @@ class _StaffSectionState extends State<StaffSection> {
       case 'hourly': return tr('Soatlik');
       case 'percent': return tr('Foiz');
       case 'percent_total': return tr('Jami tushumdan foiz');
+      case 'piece': return tr('Dona uchun');
       default: return type;
     }
   }
@@ -5499,9 +5879,12 @@ class _ReportSectionState extends State<ReportSection> {
     switch (which) {
       case 'sales':
         title = tr('Savdo'); headerColor = AppTheme.accent; headerValue = '${_money(n(d['sales']))} ${tr('so\'m')}';
+        // Savdo (jami) = Karta + Naqd + Qarz. Qarz KASSAGA TUSHMAYDI (debitorka) —
+        // shuning uchun "Kassaga tushdi" (karta+naqd) alohida ko'rsatiladi: savdo≠kassa farqi = qarz.
         rows.add(row(tr('Karta'), _money(n(pay['card'])), rc: Colors.blue));
         rows.add(row(tr('Naqd'), _money(n(pay['cash'])), rc: Colors.green));
-        rows.add(row(tr('Qarz'), _money(n(pay['debt'])), rc: Colors.deepOrange));
+        rows.add(row(tr('Qarz (kassaga tushmadi)'), _money(n(pay['debt'])), rc: Colors.deepOrange));
+        rows.add(row(tr('Kassaga tushdi (karta+naqd)'), _money(n(pay['card']) + n(pay['cash'])), rc: AppTheme.accent));
         final top = (d['top_items'] as List?) ?? [];
         if (top.isNotEmpty) {
           rows.add(_detailSub(tr('Eng ko\'p sotilgan')));
@@ -5526,10 +5909,17 @@ class _ReportSectionState extends State<ReportSection> {
         if (list.isEmpty) rows.add(empty());
         break;
       case 'profit':
+        // Foyda = Savdo (qarz ham daromad) - Harajat. Kassaga tushgan pul ALOHIDA ko'rsatiladi.
         title = tr('Sof foyda'); headerColor = Colors.green; headerValue = '${_money(n(d['profit']))} ${tr('so\'m')}';
-        rows.add(row(tr('Savdo'), _money(n(d['sales'])), rc: AppTheme.accent));
+        rows.add(row(tr('Savdo (qarz bilan)'), _money(n(d['sales'])), rc: AppTheme.accent));
         rows.add(row(tr('Harajat'), '-${_money(n(d['expenses']))}', rc: Colors.red));
         rows.add(row(tr('Sof foyda'), _money(n(d['profit'])), rc: Colors.green));
+        rows.add(_detailSub(tr('Kassa / debitorka')));
+        rows.add(row(tr('Kassaga tushdi (karta+naqd)'), _money(n(d['received'])), rc: Colors.blue));
+        rows.add(row(tr('Qarz (kassaga tushmadi)'), _money(n(pay['debt'])), rc: Colors.deepOrange));
+        rows.add(_detailSub(tr('Ma\'lumot uchun')));
+        rows.add(row(tr('Tannarx (COGS)'), _money(n(d['cogs'])), rc: Colors.orange));
+        rows.add(row(tr('Valovaya foyda (savdo-COGS)'), _money(n(d['gross_profit'])), rc: Colors.teal));
         break;
       case 'debt':
         title = tr('Qarz'); headerColor = Colors.deepOrange; headerValue = '${_money(n(pay['debt']))} ${tr('so\'m')}';
@@ -5657,6 +6047,8 @@ class _ReportSectionState extends State<ReportSection> {
             style: pw.TextStyle(font: font, fontSize: 9, color: PdfColors.grey700)),
         pw.SizedBox(height: 12),
         kv(tr('Savdo'), '${_money(n(d['sales']))} ${tr('so\'m')}'),
+        kv(tr('Tannarx (COGS)'), '${_money(n(d['cogs']))} ${tr('so\'m')}'),
+        kv(tr('Valovaya foyda'), '${_money(n(d['gross_profit']))} ${tr('so\'m')}'),
         kv(tr('Harajat'), '${_money(n(d['expenses']))} ${tr('so\'m')}'),
         kv(tr('Sof foyda'), '${_money(n(d['profit']))} ${tr('so\'m')}'),
         pw.Divider(color: PdfColors.grey400),
@@ -7705,6 +8097,8 @@ class _FloorPlanSectionState extends State<FloorPlanSection> {
 
   Widget _tableFigure(Map<String, dynamic> table, double W, double H) {
     final tSize = _d(table['table_size'], 1.0).clamp(0.6, 2.0);
+    final isFree = (table['status'] ?? 'free') == 'free';
+    final tableColor = isFree ? _accent : Colors.red; // band=qizil, bo'sh=accent
     final total = TableWithChairs.totalSize(TableWithChairs.defaultBase, tSize.toDouble());
     final seats = int.tryParse(table['seats']?.toString() ?? '') ?? 4;
     final px = _d(table['pos_x'], 0.5).clamp(0.0, 1.0);
@@ -7730,7 +8124,7 @@ class _FloorPlanSectionState extends State<FloorPlanSection> {
           number: '${table['number'] ?? ''}',
           seats: seats,
           tableSize: tSize.toDouble(),
-          color: _accent,
+          color: tableColor,
           shape: (table['shape']?.toString() == 'circle') ? 'circle' : 'rect',
         ),
       ),
@@ -7826,6 +8220,7 @@ class _PayrollSectionState extends State<PayrollSection> {
       case 'hourly': return tr('Soatlik');
       case 'percent': return tr('Savdodan foiz (%)');
       case 'percent_total': return tr('Jami tushumdan foiz (%)');
+      case 'piece': return tr('Dona uchun (sdelnaya)');
       default: return t;
     }
   }
@@ -7848,10 +8243,18 @@ class _PayrollSectionState extends State<PayrollSection> {
     switch (type) {
       case 'percent':
         final sales = double.tryParse(s['total_sales']?.toString() ?? '0') ?? 0;
+        final tth = double.tryParse(s['salary_tier_threshold']?.toString() ?? '0') ?? 0;
+        final ttv = double.tryParse(s['salary_tier_value']?.toString() ?? '0') ?? 0;
+        if (tth > 0 && ttv > 0) {
+          return '${tr('Savdo')}: ${_money(sales)}  •  ${_fmtNum(val)}%  (>${_money(tth)}/kun → ${_fmtNum(ttv)}%)';
+        }
         return '${tr('Savdo')}: ${_money(sales)} × ${_fmtNum(val)}%';
       case 'percent_total':
         final allSales = double.tryParse(s['total_all_sales']?.toString() ?? '0') ?? 0;
         return '${tr('Jami tushum')}: ${_money(allSales)} × ${_fmtNum(val)}%';
+      case 'piece':
+        final pb = double.tryParse(s['piece_base']?.toString() ?? '0') ?? 0;
+        return '${tr('Dona uchun')}: ${_money(pb)}';
       case 'monthly':
         return tr('Belgilangan oylik');
       case 'daily':

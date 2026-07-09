@@ -1,5 +1,30 @@
 const pool = require('../config/db');
 
+// Bir menu_item tannarxi (product: bog'langan ingredient narxi; recipe: retsept yig'indisi)
+const MENU_COST_SUBQUERY = `
+  SELECT mi.id AS menu_item_id,
+    CASE WHEN mi.type = 'product' AND mi.ingredient_id IS NOT NULL
+      THEN COALESCE((SELECT ing.price_per_unit FROM ingredients ing WHERE ing.id = mi.ingredient_id), 0)
+      ELSE COALESCE((SELECT SUM(r.quantity * COALESCE(i.price_per_unit, 0))
+                     FROM recipe_items r JOIN ingredients i ON r.ingredient_id = i.id
+                     WHERE r.menu_item_id = mi.id), 0)
+    END AS cost
+  FROM menu_items mi`;
+
+// Sotilgan taomlar TANNARXI (COGS). whereSql — orders(o)/order_items(oi) filtri.
+// Valovaya foyda = savdo - COGS (foydani sun'iy oshirmaslik uchun).
+async function cogsForOrders(whereSql, params = []) {
+  const r = await pool.query(
+    `SELECT COALESCE(SUM(oi.quantity * COALESCE(c.cost, 0)), 0) AS cogs
+     FROM order_items oi
+     JOIN orders o ON oi.order_id = o.id
+     LEFT JOIN (${MENU_COST_SUBQUERY}) c ON c.menu_item_id = oi.menu_item_id
+     WHERE ${whereSql}`,
+    params
+  );
+  return parseFloat(r.rows[0].cogs) || 0;
+}
+
 // Kunlik hisobot
 const getDailyReport = async (req, res) => {
   try {
@@ -16,11 +41,12 @@ const getDailyReport = async (req, res) => {
       [filterDate]
     );
 
-    // Jami harajat
+    // Jami harajat — Kassadan ketgan chiqimlar (cash_transactions) + Kassadan tashqari xarajatlar (expenses).
+    // Kassa manbali xarajatlar cash_transactions'da hisoblanadi, ikki marta sanamaslik uchun source <> 'kassa'.
     const expenseResult = await pool.query(
-      `SELECT COALESCE(SUM(amount), 0) as total_expenses
-       FROM expenses
-       WHERE (created_at - INTERVAL '150 minutes')::date = $1`,
+      `SELECT
+        (SELECT COALESCE(SUM(amount), 0) FROM cash_transactions WHERE kind='expense' AND (created_at - INTERVAL '150 minutes')::date = $1)
+        + (SELECT COALESCE(SUM(amount), 0) FROM expenses WHERE source <> 'kassa' AND (created_at - INTERVAL '150 minutes')::date = $1) as total_expenses`,
       [filterDate]
     );
 
@@ -51,6 +77,8 @@ const getDailyReport = async (req, res) => {
 
     const totalSales = parseFloat(salesResult.rows[0].total_sales);
     const totalExpenses = parseFloat(expenseResult.rows[0].total_expenses);
+    const cogs = await cogsForOrders(
+      `(o.created_at - INTERVAL '150 minutes')::date = $1 AND o.status = 'paid'`, [filterDate]);
     const profit = totalSales - totalExpenses;
 
     res.json({
@@ -58,6 +86,8 @@ const getDailyReport = async (req, res) => {
       total_orders: salesResult.rows[0].total_orders,
       total_sales: totalSales,
       total_expenses: totalExpenses,
+      cogs: cogs,
+      gross_profit: totalSales - cogs,
       profit: profit,
       top_items: topItems.rows,
       waiter_sales: waiterSales.rows
@@ -97,7 +127,10 @@ const getDashboard = async (req, res) => {
         : `${bd(col)} = ${anchor}`;
 
     const [sales, expenses, tables, staff, present, low, top, waiters, byDay, byHour, byStation] = await Promise.all([
-      pool.query(`SELECT COUNT(*)::int AS orders, COALESCE(SUM(COALESCE(final_amount, total_amount)),0) AS sales
+      pool.query(`SELECT COUNT(*)::int AS orders, COALESCE(SUM(COALESCE(final_amount, total_amount)),0) AS sales,
+                    COALESCE(SUM(paid_card),0) + COALESCE(SUM(paid_cash),0)
+                    + COALESCE(SUM(CASE WHEN (COALESCE(paid_card,0)+COALESCE(paid_cash,0)+COALESCE(paid_debt,0)) = 0
+                                        THEN COALESCE(final_amount, total_amount) ELSE 0 END),0) AS received
                   FROM orders WHERE status='paid' AND ${rng('created_at')}`),
       pool.query(`SELECT
                     (SELECT COALESCE(SUM(amount),0) FROM cash_transactions WHERE kind='expense' AND ${rng('created_at')})
@@ -131,15 +164,20 @@ const getDashboard = async (req, res) => {
     ]);
 
     const totalSales = parseFloat(sales.rows[0].sales);
+    const totalReceived = parseFloat(sales.rows[0].received); // kassaga tushgan (karta+naqd, qarzsiz)
     const totalOrders = sales.rows[0].orders;
     const totalExpenses = parseFloat(expenses.rows[0].expenses);
+    const cogs = await cogsForOrders(`o.status='paid' AND ${rng('o.created_at')}`);
 
     res.json({
       period,
       date: dateStr,
       sales: totalSales,
+      received: totalReceived,
       orders: totalOrders,
       expenses: totalExpenses,
+      cogs: cogs,
+      gross_profit: totalSales - cogs,
       profit: totalSales - totalExpenses,
       avg_check: totalOrders > 0 ? Math.round(totalSales / totalOrders) : 0,
       tables: tables.rows[0],
@@ -150,6 +188,119 @@ const getDashboard = async (req, res) => {
       sales_by_day: byDay.rows,
       sales_by_hour: byHour.rows,
       sales_by_station: byStation.rows,
+    });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+};
+
+// KENGAYTIRILGAN ANALITIKA — davr (?period=today|week|month YOKI ?from=&to=) bo'yicha
+// to'liq kesim + OLDINGI teng davr bilan taqqoslash (o'sish/pasayish %).
+const getAnalytics = async (req, res) => {
+  try {
+    const { from_s, to_excl_s, period } = await resolveRange(req.query);
+    const cur = [from_s, to_excl_s];
+    const W = `status='paid' AND created_at >= $1 AND created_at < $2`;
+    // oldingi teng uzunlikdagi davr: [from - (to-from), from)
+    const PREV = `($1::timestamp - ($2::timestamp - $1::timestamp))`;
+    const Wp = `status='paid' AND created_at >= ${PREV} AND created_at < $1::timestamp`;
+    const cashExpr = `COALESCE(SUM(paid_cash),0)
+      + COALESCE(SUM(CASE WHEN (COALESCE(paid_card,0)+COALESCE(paid_cash,0)+COALESCE(paid_debt,0))=0
+                          THEN COALESCE(final_amount,total_amount) ELSE 0 END),0)`;
+    const receivedExpr = `COALESCE(SUM(paid_card),0) + ${cashExpr}`;
+
+    const [sumCur, sumPrev, byDay, topItems, byCat, byHour, waiters, byDish, expBreak, debtRow, expCur, expPrev] = await Promise.all([
+      pool.query(`SELECT COUNT(*)::int orders, COALESCE(SUM(COALESCE(final_amount,total_amount)),0) sales,
+                    ${receivedExpr} received, COALESCE(SUM(paid_card),0) card, ${cashExpr} cash,
+                    COALESCE(SUM(paid_debt),0) debt,
+                    COALESCE(SUM(total_amount - COALESCE(final_amount,total_amount)),0) discount
+                  FROM orders WHERE ${W}`, cur),
+      pool.query(`SELECT COUNT(*)::int orders, COALESCE(SUM(COALESCE(final_amount,total_amount)),0) sales
+                  FROM orders WHERE ${Wp}`, cur),
+      pool.query(`SELECT to_char((created_at - INTERVAL '150 minutes')::date,'YYYY-MM-DD') d,
+                    COALESCE(SUM(COALESCE(final_amount,total_amount)),0) sales, COUNT(*)::int orders
+                  FROM orders WHERE ${W}
+                  GROUP BY (created_at - INTERVAL '150 minutes')::date
+                  ORDER BY (created_at - INTERVAL '150 minutes')::date`, cur),
+      pool.query(`SELECT m.name, SUM(oi.quantity)::int qty, COALESCE(SUM(oi.price*oi.quantity),0) amount
+                  FROM order_items oi JOIN menu_items m ON oi.menu_item_id=m.id JOIN orders o ON oi.order_id=o.id
+                  WHERE o.status='paid' AND o.created_at>=$1 AND o.created_at<$2
+                  GROUP BY m.name ORDER BY amount DESC LIMIT 12`, cur),
+      pool.query(`SELECT c.name, SUM(oi.quantity)::int qty, COALESCE(SUM(oi.price*oi.quantity),0) sales
+                  FROM order_items oi JOIN orders o ON oi.order_id=o.id
+                  JOIN menu_items m ON oi.menu_item_id=m.id JOIN menu_categories c ON m.category_id=c.id
+                  WHERE o.status='paid' AND o.created_at>=$1 AND o.created_at<$2
+                  GROUP BY c.name ORDER BY sales DESC`, cur),
+      pool.query(`SELECT EXTRACT(HOUR FROM created_at)::int h, COALESCE(SUM(COALESCE(final_amount,total_amount)),0) sales
+                  FROM orders WHERE ${W} GROUP BY h ORDER BY h`, cur),
+      pool.query(`SELECT u.full_name, COUNT(o.id)::int orders, COALESCE(SUM(COALESCE(o.final_amount,o.total_amount)),0) sales
+                  FROM orders o JOIN users u ON o.waiter_id=u.id
+                  WHERE o.status='paid' AND o.created_at>=$1 AND o.created_at<$2
+                  GROUP BY u.full_name ORDER BY sales DESC`, cur),
+      // TAOM bo'yicha iqtisod: sotildi/tushum/tannarx (COGS)/foyda/marja
+      pool.query(`SELECT m.id AS menu_item_id, m.name, SUM(oi.quantity)::int qty,
+                    COALESCE(SUM(oi.price*oi.quantity),0) revenue,
+                    COALESCE(SUM(oi.quantity * COALESCE(c.cost,0)),0) cost
+                  FROM order_items oi
+                  JOIN orders o ON oi.order_id=o.id
+                  JOIN menu_items m ON oi.menu_item_id=m.id
+                  LEFT JOIN (${MENU_COST_SUBQUERY}) c ON c.menu_item_id = oi.menu_item_id
+                  WHERE o.status='paid' AND o.created_at>=$1 AND o.created_at<$2
+                  GROUP BY m.id, m.name
+                  ORDER BY (COALESCE(SUM(oi.price*oi.quantity),0) - COALESCE(SUM(oi.quantity*COALESCE(c.cost,0)),0)) DESC`, cur),
+      // Chiqimlar turi bo'yicha (oylik/avans/sklad/qo'lda + xarajat turlari)
+      pool.query(`SELECT COALESCE(et.name,
+                    CASE ct.source WHEN 'salary' THEN 'Oylik' WHEN 'advance' THEN 'Avans'
+                                   WHEN 'stock' THEN 'Sklad' WHEN 'manual' THEN 'Qo''lda'
+                                   ELSE ct.source END) AS name,
+                    COALESCE(SUM(ct.amount),0) AS amount
+                  FROM cash_transactions ct
+                  LEFT JOIN expenses e ON ct.source='expense' AND ct.ref_id=e.id
+                  LEFT JOIN expense_types et ON e.expense_type_id=et.id
+                  WHERE ct.kind='expense' AND ct.created_at>=$1 AND ct.created_at<$2
+                  GROUP BY 1 ORDER BY amount DESC`, cur),
+      // Ochiq qarzlar (davrga bog'liq emas — barcha to'lanmagan)
+      pool.query(`SELECT COALESCE(SUM(amount - paid_amount),0) AS total, COUNT(*)::int AS n
+                  FROM debts WHERE (amount - paid_amount) > 0.5`),
+      pool.query(`SELECT (SELECT COALESCE(SUM(amount),0) FROM cash_transactions WHERE kind='expense' AND created_at>=$1 AND created_at<$2)
+                    + (SELECT COALESCE(SUM(amount),0) FROM expenses WHERE source<>'kassa' AND created_at>=$1 AND created_at<$2) expenses`, cur),
+      pool.query(`SELECT (SELECT COALESCE(SUM(amount),0) FROM cash_transactions WHERE kind='expense' AND created_at>=${PREV} AND created_at<$1::timestamp)
+                    + (SELECT COALESCE(SUM(amount),0) FROM expenses WHERE source<>'kassa' AND created_at>=${PREV} AND created_at<$1::timestamp) expenses`, cur),
+    ]);
+
+    const cogs = await cogsForOrders(`o.status='paid' AND o.created_at >= $1 AND o.created_at < $2`, cur);
+    const cogsPrev = await cogsForOrders(`o.status='paid' AND o.created_at >= ${PREV} AND o.created_at < $1::timestamp`, cur);
+
+    const s = sumCur.rows[0], p = sumPrev.rows[0];
+    const sales = parseFloat(s.sales), orders = s.orders, expenses = parseFloat(expCur.rows[0].expenses);
+    const pSales = parseFloat(p.sales), pOrders = p.orders, pExpenses = parseFloat(expPrev.rows[0].expenses);
+
+    res.json({
+      period,
+      summary: {
+        sales, received: parseFloat(s.received), discount: parseFloat(s.discount), orders,
+        avg_check: orders > 0 ? Math.round(sales / orders) : 0,
+        cogs, gross_profit: sales - cogs, expenses, profit: sales - expenses,
+      },
+      prev: {
+        sales: pSales, orders: pOrders,
+        avg_check: pOrders > 0 ? Math.round(pSales / pOrders) : 0,
+        profit: pSales - pExpenses, gross_profit: pSales - cogsPrev, cogs: cogsPrev,
+      },
+      payment: { card: parseFloat(s.card), cash: parseFloat(s.cash), debt: parseFloat(s.debt) },
+      sales_by_day: byDay.rows,
+      top_items: topItems.rows,
+      by_category: byCat.rows,
+      by_hour: byHour.rows,
+      waiters: waiters.rows,
+      by_dish: byDish.rows.map((r) => {
+        const revenue = parseFloat(r.revenue) || 0;
+        const cost = parseFloat(r.cost) || 0;
+        return { menu_item_id: r.menu_item_id, name: r.name, qty: r.qty, revenue, cost, profit: revenue - cost,
+                 margin: revenue > 0 ? Math.round((revenue - cost) / revenue * 100) : 0 };
+      }),
+      expenses_breakdown: expBreak.rows,
+      debt: { total: parseFloat(debtRow.rows[0].total) || 0, count: debtRow.rows[0].n },
     });
   } catch (err) {
     res.status(500).json({ message: err.message });
@@ -176,7 +327,7 @@ const getAttendanceReport = async (req, res) => {
        LEFT JOIN (
          SELECT user_id, MIN(check_in) as first_in, MAX(check_out) as last_out
          FROM attendance
-         WHERE DATE(check_in) = $1
+         WHERE (check_in - INTERVAL '150 minutes')::date = $1
          GROUP BY user_id
        ) a ON a.user_id = u.id
        WHERE u.is_active = true
@@ -270,10 +421,12 @@ const getPayroll = async (req, res) => {
     const toInclS = r.rows[0].to_incl_s;
 
     const periodYm = fromS.substring(0, 7); // '2026-06'
-    const [emp, sales, att, adv, lastSal, fines, bonuses, overrides] = await Promise.all([
+    const [emp, sales, att, adv, lastSal, fines, bonuses, overrides, pieceAgg, dailySales] = await Promise.all([
       pool.query(
         `SELECT u.id, u.full_name, r.name AS role_name,
                 u.salary_type, COALESCE(u.salary_value, 0) AS salary_value,
+                COALESCE(u.salary_tier_threshold, 0) AS tier_threshold,
+                COALESCE(u.salary_tier_value, 0) AS tier_value,
                 to_char(u.work_start, 'HH24:MI') AS work_start,
                 COALESCE(u.late_fine_per_minute, 0) AS late_fine_per_minute,
                 COALESCE(u.salary_day, 1) AS salary_day,
@@ -293,11 +446,11 @@ const getPayroll = async (req, res) => {
         `SELECT user_id,
                 to_char(MIN(check_in), 'HH24:MI') AS first_in,
                 CASE WHEN MAX(check_out) IS NOT NULL
-                     THEN EXTRACT(EPOCH FROM (MAX(check_out) - MIN(check_in))) / 3600.0
+                     THEN COALESCE(EXTRACT(EPOCH FROM SUM(check_out - check_in) FILTER (WHERE check_out IS NOT NULL)), 0) / 3600.0
                      ELSE 0 END AS hours
          FROM attendance
          WHERE check_in >= $1 AND check_in < $2
-         GROUP BY user_id, DATE(check_in)`,
+         GROUP BY user_id, (check_in - INTERVAL '150 minutes')::date`,
         [fromS, toExclS]
       ),
       pool.query(
@@ -339,6 +492,28 @@ const getPayroll = async (req, res) => {
         `SELECT user_id, amount, reason FROM late_fine_overrides WHERE period_ym = $1`,
         [periodYm]
       ),
+      // SDELNAYA (piece): har xodim uchun -> SUM(stavka * shu taom sotilgan dona)
+      pool.query(
+        `SELECT spr.user_id, COALESCE(SUM(spr.rate * q.qty), 0) AS piece_base
+         FROM salary_piece_rates spr
+         JOIN (
+           SELECT oi.menu_item_id, SUM(oi.quantity) AS qty
+           FROM order_items oi JOIN orders o ON o.id = oi.order_id
+           WHERE o.status = 'paid' AND o.created_at >= $1 AND o.created_at < $2
+           GROUP BY oi.menu_item_id
+         ) q ON q.menu_item_id = spr.menu_item_id
+         GROUP BY spr.user_id`,
+        [fromS, toExclS]
+      ),
+      // Progressiv foiz uchun: har ofitsant -> KUNLIK savdo (kassa kuni 02:30)
+      pool.query(
+        `SELECT waiter_id,
+                COALESCE(SUM(COALESCE(final_amount, total_amount)), 0) AS day_sales
+         FROM orders
+         WHERE status = 'paid' AND created_at >= $1 AND created_at < $2
+         GROUP BY waiter_id, (created_at - INTERVAL '150 minutes')::date`,
+        [fromS, toExclS]
+      ),
     ]);
 
     // Oxirgi oylik xaritasi (global)
@@ -364,6 +539,16 @@ const getPayroll = async (req, res) => {
       const val = parseFloat(s.sales);
       salesMap[s.waiter_id] = { sales: val, orders: s.orders };
       totalSales += val;
+    }
+
+    // Sdelnaya (piece) bazasi: user_id -> so'm (stavka * sotilgan dona)
+    const pieceMap = {};
+    for (const r of pieceAgg.rows) pieceMap[r.user_id] = parseFloat(r.piece_base) || 0;
+
+    // Progressiv foiz uchun: user_id -> [har KUNLIK savdo, ...]
+    const dailySalesMap = {};
+    for (const r of dailySales.rows) {
+      (dailySalesMap[r.waiter_id] = dailySalesMap[r.waiter_id] || []).push(parseFloat(r.day_sales) || 0);
     }
 
     // To'lovlar xaritasi (avans + oylik)
@@ -406,9 +591,21 @@ const getPayroll = async (req, res) => {
       const sm = salesMap[u.id] || { sales: 0, orders: 0 };
       const hours = Math.round(e.hours * 100) / 100;
       let base = 0;
+      const tierThreshold = parseFloat(u.tier_threshold) || 0;
+      const tierValue = parseFloat(u.tier_value) || 0;
       switch (u.salary_type) {
-        case 'percent': base = sm.sales * sv / 100; break;
+        case 'percent':
+          // Progressiv: chegara + oshirilgan foiz berilgan bo'lsa — HAR KUN alohida
+          // (kunlik savdo > chegara ? tierValue% : salary_value%). Aks holda oddiy foiz.
+          if (tierThreshold > 0 && tierValue > 0) {
+            const days = dailySalesMap[u.id] || [];
+            base = days.reduce((acc, d) => acc + d * ((d > tierThreshold ? tierValue : sv) / 100), 0);
+          } else {
+            base = sm.sales * sv / 100;
+          }
+          break;
         case 'percent_total': base = totalSales * sv / 100; break; // kassir: jami tushumdan foiz
+        case 'piece':   base = pieceMap[u.id] || 0; break;         // sdelnaya: dona-stavka yig'indisi
         case 'monthly': base = sv; break;
         case 'daily':   base = e.days * sv; break;
         case 'hourly':  base = hours * sv; break;
@@ -440,6 +637,9 @@ const getPayroll = async (req, res) => {
         role_name: u.role_name,
         salary_type: u.salary_type,
         salary_value: sv,
+        salary_tier_threshold: parseFloat(u.tier_threshold) || 0,
+        salary_tier_value: parseFloat(u.tier_value) || 0,
+        piece_base: Math.round(pieceMap[u.id] || 0),
         total_sales: sm.sales,
         total_all_sales: totalSales,
         orders_count: sm.orders,
@@ -1019,12 +1219,22 @@ const getReport = async (req, res) => {
       expensesList.push({ type_name: r.expense_type || 'Boshqa', name: r.name || '', amount, method: r.method, source: 'expense', from_kassa: false, dt: r.dt });
     }
 
+    const cogs = await cogsForOrders(
+      `o.status='paid' AND o.created_at >= $1 AND o.created_at < $2`, [from_s, to_excl_s]);
+
+    // Foyda = SAVDO (qarz ham daromad) - harajat. Qarz FOYDAGA kiradi (topilgan pul),
+    // lekin KASSAGA tushmaydi — shuning uchun "received" (kassaga tushgan) alohida ko'rsatiladi.
+    const received = parseFloat(p.card) + parseFloat(p.cash);
+
     res.json({
       period, from: from_s, to: to_incl_s,
       sales: salesTotal,
+      received,
       orders_count: ordersCount,
       avg_check: ordersCount > 0 ? Math.round(salesTotal / ordersCount) : 0,
       expenses,
+      cogs,
+      gross_profit: salesTotal - cogs,
       profit: salesTotal - expenses,
       payments: { card: parseFloat(p.card), cash: parseFloat(p.cash), debt: parseFloat(p.debt) },
       discount_total: parseFloat(p.discount),
@@ -1096,6 +1306,99 @@ const setDailyStock = async (req, res) => {
   }
 };
 
+// ==== BITTA BLYUDO ANALITIKASI (drill-down): davr bo'yicha kunlik dinamika ====
+const getDishDetail = async (req, res) => {
+  try {
+    const id = parseInt(req.params.id);
+    if (!id) return res.status(400).json({ message: 'Noto\'g\'ri id' });
+    const { from_s, to_excl_s, period } = await resolveRange(req.query);
+    const cur = [from_s, to_excl_s, id];
+    const [info, totals, byDay, byHour] = await Promise.all([
+      pool.query(`SELECT m.name, COALESCE(c.cost,0) AS unit_cost
+                  FROM menu_items m LEFT JOIN (${MENU_COST_SUBQUERY}) c ON c.menu_item_id=m.id
+                  WHERE m.id=$1`, [id]),
+      pool.query(`SELECT COALESCE(SUM(oi.quantity),0)::int qty,
+                    COALESCE(SUM(oi.price*oi.quantity),0) revenue,
+                    COUNT(DISTINCT o.id)::int orders
+                  FROM order_items oi JOIN orders o ON oi.order_id=o.id
+                  WHERE oi.menu_item_id=$3 AND o.status='paid' AND o.created_at>=$1 AND o.created_at<$2`, cur),
+      pool.query(`SELECT to_char((o.created_at - INTERVAL '150 minutes')::date,'YYYY-MM-DD') d,
+                    COALESCE(SUM(oi.quantity),0)::int qty,
+                    COALESCE(SUM(oi.price*oi.quantity),0) revenue
+                  FROM order_items oi JOIN orders o ON oi.order_id=o.id
+                  WHERE oi.menu_item_id=$3 AND o.status='paid' AND o.created_at>=$1 AND o.created_at<$2
+                  GROUP BY (o.created_at - INTERVAL '150 minutes')::date
+                  ORDER BY (o.created_at - INTERVAL '150 minutes')::date`, cur),
+      pool.query(`SELECT EXTRACT(HOUR FROM o.created_at)::int h, COALESCE(SUM(oi.quantity),0)::int qty
+                  FROM order_items oi JOIN orders o ON oi.order_id=o.id
+                  WHERE oi.menu_item_id=$3 AND o.status='paid' AND o.created_at>=$1 AND o.created_at<$2
+                  GROUP BY h ORDER BY h`, cur),
+    ]);
+    if (!info.rows.length) return res.status(404).json({ message: 'Taom topilmadi' });
+    const unitCost = parseFloat(info.rows[0].unit_cost) || 0;
+    const t = totals.rows[0];
+    const qty = t.qty, revenue = parseFloat(t.revenue) || 0;
+    const cost = qty * unitCost;
+    res.json({
+      id, name: info.rows[0].name, period,
+      unit_cost: Math.round(unitCost),
+      qty, revenue, orders: t.orders,
+      cost: Math.round(cost), profit: Math.round(revenue - cost),
+      margin: revenue > 0 ? Math.round((revenue - cost) / revenue * 100) : 0,
+      avg_per_order: t.orders > 0 ? Math.round((qty / t.orders) * 10) / 10 : 0,
+      by_day: byDay.rows.map((r) => ({ d: r.d, qty: r.qty, revenue: parseFloat(r.revenue) || 0 })),
+      by_hour: byHour.rows,
+    });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+};
+
+// ==== SDELNAYA STAVKALAR (piece-rate): xodim -> taom -> dona stavkasi ====
+const getPieceRates = async (req, res) => {
+  try {
+    const userId = parseInt(req.query.user_id);
+    if (!userId) return res.status(400).json({ message: 'user_id kerak' });
+    const r = await pool.query(
+      `SELECT spr.id, spr.menu_item_id, m.name, spr.rate
+       FROM salary_piece_rates spr JOIN menu_items m ON m.id = spr.menu_item_id
+       WHERE spr.user_id = $1 ORDER BY m.name`, [userId]);
+    res.json(r.rows.map((x) => ({ id: x.id, menu_item_id: x.menu_item_id, name: x.name, rate: parseFloat(x.rate) || 0 })));
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+};
+
+// Xodimning barcha dona-stavkalarini ALMASHTIRADI (body: { user_id, rates:[{menu_item_id, rate}] })
+const setPieceRates = async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const userId = parseInt(req.body.user_id);
+    const rates = Array.isArray(req.body.rates) ? req.body.rates : [];
+    if (!userId) { client.release(); return res.status(400).json({ message: 'user_id kerak' }); }
+    await client.query('BEGIN');
+    await client.query('DELETE FROM salary_piece_rates WHERE user_id = $1', [userId]);
+    let n = 0;
+    for (const it of rates) {
+      const mid = parseInt(it.menu_item_id);
+      const rate = Math.max(0, parseFloat(it.rate) || 0);
+      if (!mid || rate <= 0) continue;
+      await client.query(
+        `INSERT INTO salary_piece_rates (user_id, menu_item_id, rate) VALUES ($1,$2,$3)
+         ON CONFLICT (user_id, menu_item_id) DO UPDATE SET rate = EXCLUDED.rate`,
+        [userId, mid, rate]);
+      n++;
+    }
+    await client.query('COMMIT');
+    res.json({ ok: true, count: n });
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    res.status(500).json({ message: err.message });
+  } finally {
+    client.release();
+  }
+};
+
 module.exports = {
   getDailyReport, getStockReport, getAttendanceReport, getDashboard, getPayroll,
   getDailyStock, setDailyStock,
@@ -1104,5 +1407,6 @@ module.exports = {
   addSalaryBonus, listSalaryBonuses, deleteSalaryBonus,
   setLateFineOverride, deleteLateFineOverride,
   getCashbox, addCashTransaction, setOpeningBalance, deleteCashTransaction, payDebt,
-  getReport,
+  getReport, getAnalytics,
+  getDishDetail, getPieceRates, setPieceRates,
 };

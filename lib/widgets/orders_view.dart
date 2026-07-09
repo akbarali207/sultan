@@ -75,7 +75,7 @@ class _OrdersViewState extends State<OrdersView> {
       if (!mounted) return;
       final ok = !(res is Map && res['message'] != null && res['ok'] != true);
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: Text(ok ? tr('Chek chiqarilmoqda...') : (res is Map ? res['message'].toString() : tr('Xato'))),
+        content: Text(ok ? tr('Chek chiqarilmoqda...') : res['message'].toString()),
         backgroundColor: ok ? Colors.teal : Colors.red,
         duration: const Duration(milliseconds: 1500),
       ));
@@ -112,8 +112,18 @@ class _OrdersViewState extends State<OrdersView> {
       // 409 — masalan "Zakaz allaqachon to'langan": faqat message keladi (zakaz maydonlari yo'q)
       if (res is Map && res['id'] == null && res['ok'] != true && res['message'] != null) {
         if (mounted) {
+          // Server summani jonli order_items'dan qayta hisoblaydi. To'lov dialogi eskirgan
+          // snapshot'dan hisoblab yuborsa (dialog ochilgach taom qo'shilgan/o'chirilgan)
+          // 400 "...teng emas" keladi — kassirga aniq ko'rsatamiz, keyingi _load ro'yxatni yangilaydi.
+          final msg = res['message'].toString();
+          final stale = msg.contains('teng emas');
           ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text(res['message'].toString()), backgroundColor: Colors.orange),
+            SnackBar(
+              content: Text(stale
+                  ? tr('Zakaz o\'zgardi (taom qo\'shilgan/o\'chirilgan). Ro\'yxat yangilandi — to\'lovni qaytadan oching.')
+                  : msg),
+              backgroundColor: Colors.orange,
+            ),
           );
         }
       }
@@ -193,7 +203,8 @@ class _OrdersViewState extends State<OrdersView> {
               if (canCancel && orderId != null && oi['id'] != null) ...[
                 const SizedBox(width: 4),
                 InkWell(
-                  onTap: () => _cancelItem(orderId, oi['id'] as int, oi['name']?.toString() ?? ''),
+                  onTap: () => _cancelItem(orderId, oi['id'] as int, oi['name']?.toString() ?? '',
+                      num.tryParse(oi['quantity']?.toString() ?? '1') ?? 1),
                   borderRadius: BorderRadius.circular(12),
                   child: Padding(
                     padding: const EdgeInsets.all(2),
@@ -208,29 +219,77 @@ class _OrdersViewState extends State<OrdersView> {
     );
   }
 
-  // Bitta taomni bekor qilish (to'lanmagan zakazda)
-  Future<void> _cancelItem(int orderId, int itemId, String name) async {
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (_) => AlertDialog(
-        backgroundColor: _card,
-        title: Text(tr('Taomni bekor qilish'), style: TextStyle(color: _text)),
-        content: Text('"$name" — ${tr('shu taomni zakazdan o\'chirasizmi?')}',
-            style: TextStyle(color: _textSoft)),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context, false),
-              child: Text(tr('Yo\'q'), style: TextStyle(color: _textSoft))),
-          ElevatedButton(
-            style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
-            onPressed: () => Navigator.pop(context, true),
-            child: Text(tr('Ha, bekor qil'), style: const TextStyle(color: Colors.white)),
+  // Bitta taomni bekor qilish (to'lanmagan zakazda).
+  // qtyHave > 1 bo'lsa — nechtasini bekor qilishni tanlash mumkin (masalan 5 tadan 2 tasi).
+  Future<void> _cancelItem(int orderId, int itemId, String name, num qtyHave) async {
+    final total = qtyHave.toInt();
+    int? chosen;
+    if (total <= 1) {
+      final ok = await showDialog<bool>(
+        context: context,
+        builder: (_) => AlertDialog(
+          backgroundColor: _card,
+          title: Text(tr('Taomni bekor qilish'), style: TextStyle(color: _text)),
+          content: Text('"$name" — ${tr('shu taomni zakazdan o\'chirasizmi?')}',
+              style: TextStyle(color: _textSoft)),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(context, false),
+                child: Text(tr('Yo\'q'), style: TextStyle(color: _textSoft))),
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
+              onPressed: () => Navigator.pop(context, true),
+              child: Text(tr('Ha, bekor qil'), style: const TextStyle(color: Colors.white)),
+            ),
+          ],
+        ),
+      );
+      if (ok != true) return;
+      chosen = total;
+    } else {
+      int sel = 1; // nechtasini bekor qilamiz (default 1)
+      chosen = await showDialog<int>(
+        context: context,
+        builder: (_) => StatefulBuilder(
+          builder: (ctx, setSt) => AlertDialog(
+            backgroundColor: _card,
+            title: Text('"$name"', style: TextStyle(color: _text, fontSize: 16)),
+            content: Column(mainAxisSize: MainAxisSize.min, children: [
+              Text('${tr('Zakazda')}: $total. ${tr('Nechtasini bekor qilamiz?')}',
+                  style: TextStyle(color: _textSoft, fontSize: 13)),
+              const SizedBox(height: 16),
+              Row(mainAxisAlignment: MainAxisAlignment.center, children: [
+                _stepBtn(Icons.remove, () { if (sel > 1) setSt(() => sel--); }),
+                SizedBox(
+                  width: 72,
+                  child: Text('$sel', textAlign: TextAlign.center,
+                      style: TextStyle(color: _text, fontSize: 28, fontWeight: FontWeight.bold)),
+                ),
+                _stepBtn(Icons.add, () { if (sel < total) setSt(() => sel++); }),
+              ]),
+              const SizedBox(height: 10),
+              Text(sel >= total ? tr('Butun taom o\'chiriladi') : '${tr('Qoladi')}: ${total - sel}',
+                  style: TextStyle(color: _textSoft, fontSize: 12)),
+            ]),
+            actions: [
+              TextButton(onPressed: () => Navigator.pop(ctx),
+                  child: Text(tr('Yo\'q'), style: TextStyle(color: _textSoft))),
+              ElevatedButton(
+                style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
+                onPressed: () => Navigator.pop(ctx, sel),
+                child: Text('$sel ${tr('ta bekor qil')}', style: const TextStyle(color: Colors.white)),
+              ),
+            ],
           ),
-        ],
-      ),
-    );
-    if (ok != true) return;
+        ),
+      );
+      if (chosen == null) return;
+    }
+
+    // chosen == total -> butun taom (qty parametrsiz); aks holda qisman (?qty=N)
+    final full = chosen >= total;
+    final url = '${AppConstants.orders}/$orderId/items/$itemId${full ? '' : '?qty=$chosen'}';
     try {
-      final res = await ApiService.delete('${AppConstants.orders}/$orderId/items/$itemId');
+      final res = await ApiService.delete(url);
       if (res is Map && res['ok'] != true && res['message'] != null) {
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
@@ -244,6 +303,140 @@ class _OrdersViewState extends State<OrdersView> {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('${tr('Xato')}: $e'), backgroundColor: Colors.red));
       }
+    }
+  }
+
+  Widget _stepBtn(IconData ic, VoidCallback onTap) => Material(
+        color: _cardBorder,
+        borderRadius: BorderRadius.circular(10),
+        child: InkWell(
+          onTap: onTap,
+          borderRadius: BorderRadius.circular(10),
+          child: Padding(padding: const EdgeInsets.all(10), child: Icon(ic, color: _text, size: 22)),
+        ),
+      );
+
+  // Zakazni boshqa stolga ko'chirish / birlashtirish
+  Future<void> _moveOrder(Map order) async {
+    if (_mutating) return;
+    List<dynamic> tables = [];
+    try {
+      final r = await ApiService.get(AppConstants.tables);
+      tables = r is List ? r : [];
+    } catch (_) {}
+    if (!mounted) return;
+    final currentTableId = order['table_id'];
+    final picked = await showDialog<int>(
+      context: context,
+      builder: (_) => AlertDialog(
+        backgroundColor: _card,
+        title: Text(tr('Stolni ko\'chirish / birlashtirish'), style: TextStyle(color: _text, fontSize: 16)),
+        content: SizedBox(
+          width: 340,
+          child: SingleChildScrollView(
+            child: Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: tables.where((t) => t['id'] != currentTableId).map<Widget>((t) {
+                final occupied = t['status']?.toString() == 'occupied';
+                final label = t['number']?.toString() ?? t['name']?.toString() ?? '?';
+                return InkWell(
+                  onTap: () => Navigator.pop(context, t['id'] as int),
+                  borderRadius: BorderRadius.circular(10),
+                  child: Container(
+                    width: 96,
+                    padding: const EdgeInsets.symmetric(vertical: 12),
+                    decoration: BoxDecoration(
+                      color: (occupied ? Colors.orange : Colors.green).withValues(alpha: 0.12),
+                      borderRadius: BorderRadius.circular(10),
+                      border: Border.all(color: occupied ? Colors.orange : Colors.green),
+                    ),
+                    child: Column(children: [
+                      Icon(Icons.table_restaurant, color: occupied ? Colors.orange : Colors.green),
+                      const SizedBox(height: 4),
+                      Text(label, style: TextStyle(color: _text, fontWeight: FontWeight.bold)),
+                      Text(occupied ? tr('birlashadi') : tr('bo\'sh'),
+                          style: TextStyle(color: occupied ? Colors.orange : Colors.green, fontSize: 11)),
+                    ]),
+                  ),
+                );
+              }).toList(),
+            ),
+          ),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context), child: Text(tr('Bekor'), style: TextStyle(color: _textSoft))),
+        ],
+      ),
+    );
+    if (picked == null) return;
+    setState(() => _mutating = true);
+    try {
+      final res = await ApiService.put('${AppConstants.orders}/${order['id']}/move', {'table_id': picked},
+          idempotencyKey: ApiService.newIdempotencyKey());
+      if (!mounted) return;
+      if (res is Map && res['ok'] != true && res['message'] != null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text(res['message'].toString()), backgroundColor: Colors.red));
+      } else {
+        final merged = res is Map && res['merged'] == true;
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text(merged ? tr('Stollar birlashtirildi') : tr('Zakaz ko\'chirildi')),
+            backgroundColor: Colors.green));
+      }
+      await _load();
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('${tr('Xato')}: $e'), backgroundColor: Colors.red));
+      }
+    } finally {
+      if (mounted) setState(() => _mutating = false);
+    }
+  }
+
+  // To'langan zakazni QAYTA OCHISH — noto'g'ri to'lovni tuzatish uchun
+  Future<void> _reopenOrder(Map o) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        backgroundColor: _card,
+        title: Text(tr('Zakazni qayta ochish'), style: TextStyle(color: _text)),
+        content: Text(
+            '#${o['id']} — ${tr('to\'lovni bekor qilib qayta ochamizmi? Kassa, sklad va qarz qaytariladi, keyin tahrirlab qayta to\'lash mumkin.')}',
+            style: TextStyle(color: _textSoft)),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context, false),
+              child: Text(tr('Yo\'q'), style: TextStyle(color: _textSoft))),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.orange),
+            onPressed: () => Navigator.pop(context, true),
+            child: Text(tr('Ha, qayta och'), style: const TextStyle(color: Colors.white)),
+          ),
+        ],
+      ),
+    );
+    if (ok != true || _mutating) return;
+    setState(() => _mutating = true);
+    try {
+      final res = await ApiService.put('${AppConstants.orders}/${o['id']}/reopen', {},
+          idempotencyKey: ApiService.newIdempotencyKey());
+      if (!mounted) return;
+      if (res is Map && res['ok'] != true && res['message'] != null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text(res['message'].toString()), backgroundColor: Colors.red));
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text(tr('Zakaz qayta ochildi')), backgroundColor: Colors.green));
+      }
+      await _load();
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('${tr('Xato')}: $e'), backgroundColor: Colors.red));
+      }
+    } finally {
+      if (mounted) setState(() => _mutating = false);
     }
   }
 
@@ -418,16 +611,18 @@ class _OrdersViewState extends State<OrdersView> {
                       const SizedBox(height: 8),
                       _orderItems(itemList, orderId: id, canCancel: widget.canComplete),
                       const SizedBox(height: 12),
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.end,
+                      Wrap(
+                        alignment: WrapAlignment.end,
+                        spacing: 8,
+                        runSpacing: 8,
                         children: [
+                          // ↔ Stolni ko'chirish/birlashtirish — HAMMA (o'z zakazini)
+                          _statusBtn(tr('↔ Ko\'chirish'), Colors.deepPurple, () => _moveOrder(order)),
                           // 🧾 Счёт (pri-chek) — HAMMA (oddiy ofitsant ham) chiqara oladi
                           _statusBtn(tr('🧾 Hisob (Счёт)'), Colors.blue, () => _printBill(order['id'] as int)),
                           // O'chirish + Tugatish (to'lov) — FAQAT kassir/admin
                           if (widget.canComplete) ...[
-                            const SizedBox(width: 8),
                             _statusBtn(tr('O\'chirish'), Colors.red, () => _deleteOrder(order)),
-                            const SizedBox(width: 8),
                             _statusBtn(tr('✓ Tugatish (To\'landi)'), Colors.teal, () => _confirmComplete(order)),
                           ],
                         ],
@@ -531,6 +726,12 @@ class _OrdersViewState extends State<OrdersView> {
                                   onTap: () => _printBill(o['id'] as int),
                                   borderRadius: BorderRadius.circular(12),
                                   child: Icon(Icons.print, color: _accent, size: 18),
+                                ),
+                                const SizedBox(width: 8),
+                                InkWell(
+                                  onTap: () => _reopenOrder(o),
+                                  borderRadius: BorderRadius.circular(12),
+                                  child: const Icon(Icons.lock_open, color: Colors.orange, size: 18),
                                 ),
                                 const SizedBox(width: 8),
                                 InkWell(
@@ -659,6 +860,7 @@ class _PaymentDialogState extends State<_PaymentDialog> {
   final _cardCtrl = TextEditingController();
   final _debtCtrl = TextEditingController();
   final _debtorCtrl = TextEditingController();
+  final _givenCashCtrl = TextEditingController(); // kassir uchun: mijoz bergan naqd (faqat qaytim ko'rsatgichi)
 
   double get _subtotal => double.tryParse(widget.order['total_amount']?.toString() ?? '0') ?? 0;
 
@@ -693,6 +895,7 @@ class _PaymentDialogState extends State<_PaymentDialog> {
     _cardCtrl.dispose();
     _debtCtrl.dispose();
     _debtorCtrl.dispose();
+    _givenCashCtrl.dispose();
     super.dispose();
   }
 
@@ -845,6 +1048,27 @@ class _PaymentDialogState extends State<_PaymentDialog> {
                         style: const TextStyle(color: Colors.green, fontSize: 15, fontWeight: FontWeight.bold)),
                 ]),
               ),
+              // sdacha-change: kassir mijoz bergan naqdni kiritsa, ortiqchasi = qaytim.
+              // Serverga yuboriladigan split o'zgarmaydi (paid_cash = cash), bu faqat ko'rsatgich.
+              if (!_over && cash > 0) ...[
+                const SizedBox(height: 8),
+                TextField(
+                  controller: _givenCashCtrl,
+                  keyboardType: TextInputType.number,
+                  style: TextStyle(color: AppTheme.text),
+                  onChanged: (_) => setState(() {}),
+                  decoration: _dec(tr('Berilgan naqd')),
+                ),
+                if (_n(_givenCashCtrl) > cash) ...[
+                  const SizedBox(height: 6),
+                  Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+                    Text(tr('Qaytim'),
+                        style: TextStyle(color: AppTheme.text, fontSize: 14, fontWeight: FontWeight.bold)),
+                    Text('${_money(_n(_givenCashCtrl) - cash)} ${tr('so\'m')}',
+                        style: const TextStyle(color: Colors.orange, fontSize: 15, fontWeight: FontWeight.bold)),
+                  ]),
+                ],
+              ],
               if (_debt > 0) ...[
                 const SizedBox(height: 8),
                 TextField(

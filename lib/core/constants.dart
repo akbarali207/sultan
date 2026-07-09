@@ -1,6 +1,15 @@
 class AppConstants {
-  // PRODUCTION: doimiy domen (Cloudflare Tunnel orqali bu PC'dagi serverga)
-  static const String baseUrl = 'https://sultanpos.net/api';
+  // UZOQ (internet) manzil: doimiy domen (Cloudflare Tunnel orqali POS-PC'ga).
+  // Bino tashqarisidan (uy/telefon) kirishda ishlatiladi.
+  static const String remoteBaseUrl = 'https://sultanpos.net/api';
+
+  // FAOL manzil — ilova ishga tushganda ApiService.resolveBase() aniqlaydi:
+  //   restoran Wi-Fi'sida lokal POS-PC topilса -> lokal (internet shart emas),
+  //   topilmasa -> remote (internet). Shu tufayli internet uzilса ham ishlaydi.
+  static String _activeBaseUrl = remoteBaseUrl;
+  static String get baseUrl => _activeBaseUrl;
+  static set baseUrl(String v) => _activeBaseUrl = v;
+
   // Rasm/upload manzili — baseUrl host'i (api'siz). Masalan https://sultanpos.net
   static String get imageBase => baseUrl.replaceAll('/api', '');
 
@@ -47,6 +56,5 @@ class AppConstants {
 
   static const String roleAdmin = 'admin';
   static const String roleWaiter = 'waiter';
-  static const String roleChef = 'chef';
   static const String roleCashier = 'cashier';
 }

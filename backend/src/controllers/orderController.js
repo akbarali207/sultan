@@ -114,9 +114,17 @@ const createOrder = async (req, res) => {
   let { waiter_id } = req.body;
   if (req.user && req.user.role === 'waiter') waiter_id = req.user.id;
   // items: [{menu_item_id, quantity, price, notes, is_kitchen}]
+  if (!Array.isArray(items) || items.length === 0) return res.status(400).json({ message: 'Kamida bitta taom kerak' });
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+
+    // Super-admin STOP — tizim to'xtatilgan bo'lsa yangi zakaz qabul qilinmaydi
+    const fz = await client.query('SELECT frozen FROM system_state WHERE id = 1');
+    if (fz.rows.length && fz.rows[0].frozen === true) {
+      await client.query('ROLLBACK');
+      return res.status(423).json({ message: 'Tizim to\'xtatilgan (super-admin) — zakaz qabul qilinmaydi' });
+    }
 
     // Stol qatorini qulflash — ikki ofitsant bir vaqtda shu stolga zakaz ochsa,
     // ikkinchisi kutadi va mavjud ochiq zakazga qo'shiladi (ikkita zakaz ochilmaydi)
@@ -186,12 +194,30 @@ const createOrder = async (req, res) => {
       orderId = orderResult.rows[0].id;
     }
 
+    // Narxni SERVERDA menu_items dan olamiz — mijoz yuborgan narxga ISHONMAYMIZ.
+    // (Aks holda ofitsant narxni o'zgartirib arzon probit qilishi mumkin edi: steykni 1 so'mga.)
+    const priceIds = [...new Set(items.map((it) => Number(it.menu_item_id)).filter((x) => Number.isInteger(x)))];
+    const priceRes = priceIds.length
+      ? await client.query(`SELECT id, price FROM menu_items WHERE id = ANY($1)`, [priceIds])
+      : { rows: [] };
+    const priceMap = new Map(priceRes.rows.map((r) => [Number(r.id), parseFloat(r.price) || 0]));
+
     for (const item of items) {
-      const price = parseFloat(item.price) || 0;
+      const mid = Number(item.menu_item_id);
+      if (!priceMap.has(mid)) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ message: `Taom topilmadi (id=${item.menu_item_id})` });
+      }
+      const qty = parseFloat(item.quantity);
+      if (!(qty > 0)) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ message: 'Taom miqdori musbat bo\'lishi kerak' });
+      }
+      const price = priceMap.get(mid); // FAQAT bazadagi narx
       await client.query(
         `INSERT INTO order_items (order_id, menu_item_id, quantity, price, notes, is_kitchen)
          VALUES ($1, $2, $3, $4, $5, $6)`,
-        [orderId, item.menu_item_id, item.quantity, price, item.notes || '', item.is_kitchen !== false]
+        [orderId, mid, qty, price, item.notes || '', item.is_kitchen !== false]
       );
     }
 
@@ -286,7 +312,7 @@ const restoreStock = async (client, orderId, itemId = null) => {
 // ATMEN chekini navbatga qo'yish — faqat OSHXONA KO'RGAN (printed=true) taomlar,
 // har bo'limga (multistation: har ikkala bo'limga) alohida "ОТМЕНА" chek yoziladi.
 // onlyItemId berilsa — faqat bitta taom (taom bekor qilinganda).
-const queueCancelTickets = async (client, orderId, onlyItemId = null) => {
+const queueCancelTickets = async (client, orderId, onlyItemId = null, overrideQty = null) => {
   const rows = await client.query(
     `SELECT oi.quantity, mi.name AS item_name,
             COALESCE(mis.station_id, mi.station_id) AS station_id,
@@ -308,7 +334,11 @@ const queueCancelTickets = async (client, orderId, onlyItemId = null) => {
     if (!byStation[key]) {
       byStation[key] = { station_id: r.station_id, table_no: r.table_no, waiter: r.waiter_name, items: [] };
     }
-    byStation[key].items.push({ name: r.item_name, quantity: parseFloat(r.quantity) });
+    byStation[key].items.push({
+      name: r.item_name,
+      // qisman bekorда faqat bekor qilingan miqdor chekда ko'rinadi (butun taom emas)
+      quantity: (overrideQty != null && onlyItemId) ? parseFloat(overrideQty) : parseFloat(r.quantity),
+    });
   }
   for (const g of Object.values(byStation)) {
     await client.query(
@@ -337,10 +367,38 @@ const deleteOrder = async (req, res) => {
     }
     const order = cur.rows[0];
     if (order.status === 'paid') {
+      // Qarzi qisman to'langan zakazni o'chirib bo'lmaydi — yig'ilgan naqd kassadan
+      // izsiz yo'qolmasin (avval qarz to'lovini alohida tuzatish kerak).
+      const repChk = await client.query(`SELECT COALESCE(SUM(paid_amount),0) AS rep FROM debts WHERE order_id = $1`, [id]);
+      if (parseFloat(repChk.rows[0].rep) > 0) {
+        await client.query('ROLLBACK');
+        return res.status(409).json({ message: 'Bu zakaz qarzi qisman to\'langan — avval qarz to\'lovini alohida tuzating, keyin o\'chiring' });
+      }
+      // VOID AUDITI: to'langan zakaz o'chirilishi yozib qolinadi (kim, qancha, qaysi, sabab)
+      const ures = req.user && req.user.id
+        ? await client.query('SELECT full_name FROM users WHERE id = $1', [req.user.id])
+        : { rows: [] };
+      const uname = ures.rows.length ? ures.rows[0].full_name : null;
+      const tres = order.table_id
+        ? await client.query('SELECT COALESCE(number::text, name) AS l FROM tables WHERE id = $1', [order.table_id])
+        : { rows: [] };
+      const tlabel = tres.rows.length ? tres.rows[0].l : null;
+      const reason = ((req.body && req.body.reason) || (req.query && req.query.reason) || '').toString().trim().slice(0, 300) || null;
+      await client.query(
+        `INSERT INTO order_void_log (order_id, table_label, final_amount, paid_card, paid_cash, paid_debt, discount_percent, user_id, user_name, reason)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+        [id, tlabel, order.final_amount, order.paid_card, order.paid_cash, order.paid_debt, order.discount_percent,
+         (req.user && req.user.id) || null, uname, reason]
+      );
       // Kassa tushumini qaytar (shu zakaz bo'yicha)
       await client.query(`DELETE FROM cash_transactions WHERE source = 'order' AND ref_id = $1`, [id]);
-      // Qarz yozuvini o'chir
-      await client.query(`DELETE FROM debts WHERE order_id = $1`, [id]);
+      // Qarz yozuvini o'chir — o'chirilgan qarz id larini olamiz
+      const delDebts = await client.query(`DELETE FROM debts WHERE order_id = $1 RETURNING id`, [id]);
+      // Shu qarzlarga qilingan QARZ TO'LOVLARINI ham qaytar (aks holda kassa tushumi ortadi)
+      const debtIds = delDebts.rows.map(r => r.id);
+      if (debtIds.length > 0) {
+        await client.query(`DELETE FROM cash_transactions WHERE source = 'debt' AND ref_id = ANY($1)`, [debtIds]);
+      }
       // Skladni qaytar (to'langanda ayirilgan edi)
       await restoreStock(client, id);
     } else {
@@ -386,7 +444,33 @@ const cancelOrderItem = async (req, res) => {
       await client.query('ROLLBACK');
       return res.status(400).json({ message: 'To\'langan zakazdan taom o\'chirib bo\'lmaydi. Butun zakazni o\'chiring.' });
     }
-    // O'chirishdan OLDIN atmen chekini navbatga qo'yamiz (oshxona ko'rgan bo'lsa)
+
+    // QISMAN bekor: ?qty=N berilsa va N < mavjud miqdor bo'lsa — faqat N tasini bekor qilamiz
+    // (masalan 5 ta somsadan 2 tasini). Qolgani zakazда qoladi, qayta probit qilish shart emas.
+    const cancelQty = parseFloat(req.query.qty);
+    const cur = await client.query(
+      `SELECT quantity FROM order_items WHERE id = $1 AND order_id = $2`, [itemId, orderId]
+    );
+    if (cur.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ message: 'Taom topilmadi' });
+    }
+    const have = parseFloat(cur.rows[0].quantity) || 0;
+    if (cancelQty > 0 && cancelQty < have) {
+      await queueCancelTickets(client, orderId, itemId, cancelQty); // faqat bekor qilingan miqdorga ОТМЕНА cheki
+      await client.query(`UPDATE order_items SET quantity = quantity - $1 WHERE id = $2`, [cancelQty, itemId]);
+      const sp = await client.query(
+        `SELECT COALESCE(SUM(price * quantity), 0) AS total FROM order_items WHERE order_id = $1`, [orderId]
+      );
+      const nt = parseFloat(sp.rows[0].total) || 0;
+      await client.query(`UPDATE orders SET total_amount = $1 WHERE id = $2`, [nt, orderId]);
+      await client.query('COMMIT');
+      emit('orders', orderId);
+      emit('print', orderId); // qisman ОТМЕНА cheki darhol chiqsin
+      return res.json({ ok: true, partial: true, remaining: have - cancelQty, total_amount: nt });
+    }
+
+    // TO'LIQ bekor — o'chirishdan OLDIN atmen chekini navbatga qo'yamiz (oshxona ko'rgan bo'lsa)
     await queueCancelTickets(client, orderId, itemId);
     const del = await client.query(
       `DELETE FROM order_items WHERE id = $1 AND order_id = $2 RETURNING *`,
@@ -450,6 +534,12 @@ const updateOrderStatus = async (req, res) => {
     }
     const existing = cur.rows[0];
 
+    // Status whitelist — noto'g'ri qiymat DB CHECK ga urilib 500 bermasin
+    if (!['pending', 'preparing', 'ready', 'paid'].includes(status)) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ message: 'Noto\'g\'ri status' });
+    }
+
     // MUHIM: allaqachon to'langan zakazni qayta to'lash TAQIQ —
     // aks holda sklad ikki marta ayirilib, kassaga ikki marta tushum yozilardi
     if (existing.status === 'paid') {
@@ -458,6 +548,17 @@ const updateOrderStatus = async (req, res) => {
     }
 
     if (status === 'paid') {
+      // To'lovni faqat KASSIR/ADMIN (yoki director/super-admin) qabul qiladi
+      if (req.user && !['cashier', 'admin', 'director', 'guest'].includes(req.user.role)) {
+        await client.query('ROLLBACK');
+        return res.status(403).json({ message: 'To\'lovni faqat kassir yoki admin qabul qiladi' });
+      }
+      // Super-admin STOP — tizim to'xtatilgan bo'lsa to'lov qabul qilinmaydi
+      const fzp = await client.query('SELECT frozen FROM system_state WHERE id = 1');
+      if (fzp.rows.length && fzp.rows[0].frozen === true) {
+        await client.query('ROLLBACK');
+        return res.status(423).json({ message: 'Tizim to\'xtatilgan (super-admin) — to\'lov qabul qilinmaydi' });
+      }
       // Summani serverda qayta hisoblaymiz (mijoz yuborgan/eskirgan qiymatga ishonmaymiz)
       const sumRes = await client.query(
         `SELECT COALESCE(SUM(price * quantity), 0) AS total FROM order_items WHERE order_id = $1`,
@@ -487,10 +588,16 @@ const updateOrderStatus = async (req, res) => {
         return res.status(400).json({ message: 'Qarz uchun mijoz ism-familiyasi kerak' });
       }
 
+      // To'lovni qabul qilgan xodim (kassir) — podotchётlik uchun
+      const payer = req.user && req.user.id
+        ? await client.query('SELECT full_name FROM users WHERE id = $1', [req.user.id])
+        : { rows: [] };
+      const payerName = payer.rows.length ? payer.rows[0].full_name : null;
       await client.query(
         `UPDATE orders SET status='paid', discount_percent=$1, discount_reason=$2, final_amount=$3,
-                paid_card=$4, paid_cash=$5, paid_debt=$6, debtor_name=$7 WHERE id=$8`,
-        [discPct, discReason, finalAmount, card, cash, debt, debt > 0 ? debtorName : null, id]
+                paid_card=$4, paid_cash=$5, paid_debt=$6, debtor_name=$7, paid_by=$9, paid_by_name=$10 WHERE id=$8`,
+        [discPct, discReason, finalAmount, card, cash, debt, debt > 0 ? debtorName : null, id,
+         (req.user && req.user.id) || null, payerName]
       );
 
       await client.query(`UPDATE tables SET status='free' WHERE id=$1`, [existing.table_id]);
@@ -557,4 +664,158 @@ const printBill = async (req, res) => {
   }
 };
 
-module.exports = { getTables, createTable, createOrder, getOrders, getOrderItems, updateOrderStatus, deleteOrder, cancelOrderItem, printBill };
+// Zakazni BOSHQA STOLGA ko'chirish yoki stollarni BIRLASHTIRISH.
+//  - Maqsad stol BO'SH bo'lsa: oddiy ko'chirish (zakaz shu stolga o'tadi).
+//  - Maqsad stolda OCHIQ zakaz bo'lsa: BIRLASHTIRISH (taomlar o'sha zakazga
+//    qo'shiladi, manba zakaz o'chadi). Ilgari bu imkonsiz edi — stolni o'chirib
+//    qaytadan probit qilishga to'g'ri kelardi.
+const moveOrder = async (req, res) => {
+  const { id } = req.params;
+  const targetTableId = parseInt(req.body.table_id);
+  if (isNaN(targetTableId)) return res.status(400).json({ message: 'table_id kerak' });
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const cur = await client.query(`SELECT * FROM orders WHERE id = $1 FOR UPDATE`, [id]);
+    if (!cur.rows.length) { await client.query('ROLLBACK'); return res.status(404).json({ message: 'Zakaz topilmadi' }); }
+    const order = cur.rows[0];
+    if (order.status === 'paid') { await client.query('ROLLBACK'); return res.status(400).json({ message: 'To\'langan zakazni ko\'chirib bo\'lmaydi' }); }
+    // Ofitsant faqat O'Z zakazini ko'chiradi
+    if (req.user && req.user.role === 'waiter' && order.waiter_id !== req.user.id) {
+      await client.query('ROLLBACK'); return res.status(403).json({ message: 'Ruxsat yo\'q' });
+    }
+    const sourceTableId = order.table_id;
+    if (sourceTableId === targetTableId) { await client.query('ROLLBACK'); return res.status(400).json({ message: 'Bir xil stol' }); }
+
+    const tgt = await client.query(`SELECT id FROM tables WHERE id = $1 AND is_active = true FOR UPDATE`, [targetTableId]);
+    if (!tgt.rows.length) { await client.query('ROLLBACK'); return res.status(404).json({ message: 'Maqsad stol topilmadi' }); }
+
+    // Maqsad stolda ochiq zakaz bormi?
+    const tOpen = await client.query(
+      `SELECT id FROM orders WHERE table_id = $1 AND status <> 'paid' ORDER BY created_at LIMIT 1 FOR UPDATE`,
+      [targetTableId]
+    );
+
+    let merged = false;
+    if (tOpen.rows.length) {
+      // BIRLASHTIRISH: taomlarni maqsad zakazga ko'chiramiz, manbani o'chiramiz
+      const targetOrderId = tOpen.rows[0].id;
+      await client.query(`UPDATE order_items SET order_id = $1 WHERE order_id = $2`, [targetOrderId, id]);
+      if (order.notes && order.notes.trim()) {
+        await client.query(
+          `UPDATE orders SET notes = CONCAT_WS(' | ', NULLIF(notes,''), $1) WHERE id = $2`,
+          [order.notes.trim(), targetOrderId]
+        );
+      }
+      await client.query(`DELETE FROM orders WHERE id = $1`, [id]);
+      const s = await client.query(`SELECT COALESCE(SUM(price*quantity),0) AS total FROM order_items WHERE order_id = $1`, [targetOrderId]);
+      await client.query(`UPDATE orders SET total_amount = $1 WHERE id = $2`, [parseFloat(s.rows[0].total) || 0, targetOrderId]);
+      merged = true;
+    } else {
+      // KO'CHIRISH: zakazni maqsad stolga biriktiramiz
+      await client.query(`UPDATE orders SET table_id = $1 WHERE id = $2`, [targetTableId, id]);
+      await client.query(`UPDATE tables SET status = 'occupied' WHERE id = $1`, [targetTableId]);
+    }
+    // Manba stol endi bo'sh (uning ochiq zakazi ko'chdi/o'chdi)
+    if (sourceTableId) {
+      await client.query(`UPDATE tables SET status = 'free' WHERE id = $1`, [sourceTableId]);
+    }
+    await client.query('COMMIT');
+    emit('orders', id);
+    emit('tables', sourceTableId || null);
+    emit('tables', targetTableId);
+    res.json({ ok: true, merged });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    res.status(500).json({ message: err.message });
+  } finally {
+    client.release();
+  }
+};
+
+// To'langan zakazni QAYTA OCHISH (reopen) — noto'g'ri to'lovni tuzatish uchun.
+// To'lov ta'sirlarini bekor qiladi (kassa tushumi, qarz+qarz to'lovlari, sklad)
+// va zakazni ochiq holatga (pending) qaytaradi — kassir qayta to'g'ri to'laydi.
+// FAQAT kassir/admin. Ilgari yagona chiqish — butun zakazni o'chirib qaytadan yaratish edi.
+const reopenOrder = async (req, res) => {
+  const { id } = req.params;
+  if (req.user && !['cashier','admin','director','guest'].includes(req.user.role)) return res.status(403).json({ message: 'Qayta ochishni faqat kassir yoki admin qiladi' });
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const cur = await client.query(`SELECT * FROM orders WHERE id = $1 FOR UPDATE`, [id]);
+    if (!cur.rows.length) { await client.query('ROLLBACK'); return res.status(404).json({ message: 'Zakaz topilmadi' }); }
+    const order = cur.rows[0];
+    if (order.status !== 'paid') { await client.query('ROLLBACK'); return res.status(400).json({ message: 'Faqat to\'langan zakazni qayta ochish mumkin' }); }
+
+    // Stolda boshqa ochiq zakaz bo'lsa — qayta ochib bo'lmaydi (bir stol = bitta ochiq zakaz)
+    if (order.table_id) {
+      const other = await client.query(
+        `SELECT 1 FROM orders WHERE table_id = $1 AND status <> 'paid' AND id <> $2 LIMIT 1`,
+        [order.table_id, id]
+      );
+      if (other.rows.length) {
+        await client.query('ROLLBACK');
+        return res.status(409).json({ message: 'Stolda yangi ochiq zakaz bor — avval uni yakunlang' });
+      }
+    }
+
+    // Qarzi qisman to'langan zakazni qayta ochib bo'lmaydi (yig'ilgan naqd izsiz ketmasin)
+    const repChkR = await client.query(`SELECT COALESCE(SUM(paid_amount),0) AS rep FROM debts WHERE order_id = $1`, [id]);
+    if (parseFloat(repChkR.rows[0].rep) > 0) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ message: 'Bu zakaz qarzi qisman to\'langan — qayta ochishdan oldin qarz to\'lovini alohida tuzating' });
+    }
+
+    // REOPEN AUDITI: to'langan zakazning qayta ochilishi ham yozib qolinadi (deleteOrder void
+    // auditi kabi — aks holda reopen orqali izsiz pul qaytarib, keyin pending zakazni o'chirib
+    // firibgarlik qilish mumkin edi).
+    const ru = req.user && req.user.id
+      ? await client.query('SELECT full_name FROM users WHERE id = $1', [req.user.id])
+      : { rows: [] };
+    const ruName = ru.rows.length ? ru.rows[0].full_name : null;
+    const rt = order.table_id
+      ? await client.query('SELECT COALESCE(number::text, name) AS l FROM tables WHERE id = $1', [order.table_id])
+      : { rows: [] };
+    const rtLabel = rt.rows.length ? rt.rows[0].l : null;
+    const rReason = 'REOPEN: ' + (((req.body && req.body.reason) || '').toString().trim().slice(0, 290) || 'sabab ko\'rsatilmagan');
+    await client.query(
+      `INSERT INTO order_void_log (order_id, table_label, final_amount, paid_card, paid_cash, paid_debt, discount_percent, user_id, user_name, reason)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+      [id, rtLabel, order.final_amount, order.paid_card, order.paid_cash, order.paid_debt, order.discount_percent,
+       (req.user && req.user.id) || null, ruName, rReason]
+    );
+
+    // To'lov ta'sirlarini bekor qilamiz (deleteOrder paid tarmog'idagi kabi)
+    await client.query(`DELETE FROM cash_transactions WHERE source = 'order' AND ref_id = $1`, [id]);
+    const delDebts = await client.query(`DELETE FROM debts WHERE order_id = $1 RETURNING id`, [id]);
+    const debtIds = delDebts.rows.map((r) => r.id);
+    if (debtIds.length) {
+      await client.query(`DELETE FROM cash_transactions WHERE source = 'debt' AND ref_id = ANY($1)`, [debtIds]);
+    }
+    await restoreStock(client, id); // to'lovda ayirilgan sklad qaytadi
+
+    // Zakazni ochiq holatga qaytaramiz + to'lov maydonlarini tozalaymiz
+    await client.query(
+      `UPDATE orders SET status = 'pending', final_amount = NULL, discount_percent = 0,
+              discount_reason = NULL, paid_card = 0, paid_cash = 0, paid_debt = 0,
+              debtor_name = NULL, bill_requested = false WHERE id = $1`,
+      [id]
+    );
+    if (order.table_id) {
+      await client.query(`UPDATE tables SET status = 'occupied' WHERE id = $1`, [order.table_id]);
+    }
+    await client.query('COMMIT');
+    emit('orders', id);
+    emit('tables', order.table_id || null);
+    emit('kassa', null); // tushum qaytarildi
+    res.json({ ok: true });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    res.status(500).json({ message: err.message });
+  } finally {
+    client.release();
+  }
+};
+
+module.exports = { getTables, createTable, createOrder, getOrders, getOrderItems, updateOrderStatus, deleteOrder, cancelOrderItem, printBill, moveOrder, reopenOrder };

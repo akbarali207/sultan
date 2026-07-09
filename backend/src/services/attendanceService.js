@@ -74,12 +74,18 @@ async function recordFaceAttendance(faceId, when = null) {
       return { ok: true, status: 200, type: 'cooldown', user, message: `${user.full_name}: yaqinda belgilangan (cooldown)` };
     }
 
-    // 3. Toggle: shu kun ochiq (check_out NULL) yozuv bormi? FOR UPDATE — poygasiz.
+    // 3. Toggle: ochiq (check_out NULL) yozuv bormi? FOR UPDATE — poygasiz.
+    //    Sana cheklovi YO'Q: tunda o'tuvchi smena (masalan 23:30 kirib 01:00 chiqsa)
+    //    ochiq check_in oldingi sanada qoladi — sana bo'yicha filtrlansa topilmay,
+    //    chiqish o'rniga yangi kirish yozilib smena mangu ochiq qolardi.
+    //    Buning o'rniga oxirgi 24 soat oynasidagi eng so'nggi ochiq sessiyani topamiz.
     const open = await client.query(
       `SELECT * FROM attendance
-       WHERE user_id = $1 AND DATE(check_in) = $2 AND check_out IS NULL
+       WHERE user_id = $1 AND check_out IS NULL
+         AND check_in > $2::timestamp - make_interval(hours => 24)
+         AND check_in <= $2::timestamp
        ORDER BY check_in DESC LIMIT 1 FOR UPDATE`,
-      [user.id, dateStr]
+      [user.id, tsLocal]
     );
 
     if (open.rows.length > 0) {

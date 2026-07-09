@@ -154,7 +154,7 @@ const createPfItem = async (req, res) => {
 // Shunda P/F ishlatilgan taomlar tannarxi ham avtomatik to'g'ri chiqadi.
 const syncPfCost = async (menuItemId) => {
   if (!menuItemId) return;
-  const mi = await pool.query(`SELECT type, ingredient_id FROM menu_items WHERE id = $1`, [menuItemId]);
+  const mi = await pool.query(`SELECT type, ingredient_id, yield_kg FROM menu_items WHERE id = $1`, [menuItemId]);
   if (!mi.rows.length || mi.rows[0].type !== 'pf' || !mi.rows[0].ingredient_id) return;
   const c = await pool.query(
     `SELECT COALESCE(SUM(r.quantity * i.price_per_unit), 0) AS cost
@@ -162,8 +162,30 @@ const syncPfCost = async (menuItemId) => {
      WHERE r.menu_item_id = $1`,
     [menuItemId]
   );
+  const cost = parseFloat(c.rows[0].cost) || 0;
+  // KONVENSIYA (ega tasdiqladi 2026-07-09): P/F retsept miqdorlari 1 KG CHIQISHGA kiritiladi (per-unit) —
+  // xuddi producePf skladdan qanday ayirsa (qty·brutto). Demak narx/кг = komponentlar yig'indisi
+  // TO'G'RIDAN-TO'G'RI; yield_kg ga BO'LINMAYDI (bo'linish tannarxni 5–7 barobar buzardi). yield_kg endi rudiment.
+  const price = cost;
   await pool.query(`UPDATE ingredients SET price_per_unit = $1 WHERE id = $2`,
-    [c.rows[0].cost, mi.rows[0].ingredient_id]);
+    [price, mi.rows[0].ingredient_id]);
+};
+
+// Partiya chiqishini (ВЫХОД, kg) o'rnatish; keyin P/F narxini qayta hisoblaydi.
+const setYield = async (req, res) => {
+  try {
+    const id = parseInt(req.params.id);
+    const raw = req.body ? req.body.yield_kg : null;
+    const y = (raw === null || raw === undefined || raw === '') ? null : parseFloat(raw);
+    if (y !== null && (isNaN(y) || y < 0)) return res.status(400).json({ message: 'yield_kg noto\'g\'ri' });
+    const r = await pool.query(`UPDATE menu_items SET yield_kg = $1 WHERE id = $2 RETURNING id, ingredient_id, type`, [y, id]);
+    if (!r.rows.length) return res.status(404).json({ message: 'Taom topilmadi' });
+    if (r.rows[0].type === 'pf') await syncPfCost(id);       // narx/кг ni yangilaydi
+    if (r.rows[0].ingredient_id) await syncPfCostsUsingIngredient(r.rows[0].ingredient_id);
+    res.json({ ok: true, yield_kg: y });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
 };
 
 // Masaliq narxi o'zgarganda — shu masaliqni ishlatgan P/F'lar tannarxini qayta hisoblash
@@ -225,14 +247,17 @@ const updateMenuItem = async (req, res) => {
     const stationProvided = req.body.station_ids !== undefined || req.body.station_id !== undefined;
 
     await client.query('BEGIN');
+    // Bo'limlar berilgan bo'lsa station_id ni to'g'ridan-to'g'ri yozamiz (hammasi tozalansa $5=null);
+    // berilmagan bo'lsa eskisini saqlaymiz (COALESCE).
+    const stationExpr = stationProvided ? '$5' : 'COALESCE($5, station_id)';
     let query, params;
     if (image_url) {
       query = `UPDATE menu_items SET category_id=$1, name=$2, price=$3, is_active=$4,
-               station_id=COALESCE($5, station_id), image_url=$6 WHERE id=$7 RETURNING *`;
+               station_id=${stationExpr}, image_url=$6 WHERE id=$7 RETURNING *`;
       params = [category_id, name, price, is_active, primary, image_url, id];
     } else {
       query = `UPDATE menu_items SET category_id=$1, name=$2, price=$3, is_active=$4,
-               station_id=COALESCE($5, station_id) WHERE id=$6 RETURNING *`;
+               station_id=${stationExpr} WHERE id=$6 RETURNING *`;
       params = [category_id, name, price, is_active, primary, id];
     }
     const result = await client.query(query, params);
@@ -270,9 +295,20 @@ const deleteMenuItem = async (req, res) => {
       await client.query('COMMIT');
       return res.json({ message: 'Taom yashirildi (zakaz tarixi bor)', removed: false });
     }
+    // P/F bo'lsa — bog'langan masaliq (ingredient) yetim qolmasin (agar boshqa hech nima ishlatmasa)
+    const info = await client.query('SELECT type, ingredient_id FROM menu_items WHERE id = $1', [id]);
     await client.query('DELETE FROM recipe_items WHERE menu_item_id = $1', [id]);
     await client.query('DELETE FROM menu_item_stations WHERE menu_item_id = $1', [id]);
     await client.query('DELETE FROM menu_items WHERE id = $1', [id]);
+    if (info.rows.length && info.rows[0].type === 'pf' && info.rows[0].ingredient_id) {
+      const ingId = info.rows[0].ingredient_id;
+      await client.query(
+        `DELETE FROM ingredients WHERE id = $1
+           AND NOT EXISTS (SELECT 1 FROM recipe_items WHERE ingredient_id = $1)
+           AND NOT EXISTS (SELECT 1 FROM menu_items WHERE ingredient_id = $1)`,
+        [ingId]
+      );
+    }
     await client.query('COMMIT');
     res.json({ message: 'Taom butunlay o\'chirildi', removed: true });
   } catch (err) {
@@ -567,7 +603,7 @@ const deleteRecipeItem = async (req, res) => {
 module.exports = {
   getCategories, createCategory, updateCategory, deleteCategory,
   getMenuItems, createMenuItem, updateMenuItem, deleteMenuItem, setMenuAvailability, setDailyTracked, getMenuItemCost,
-  createPfItem,
+  createPfItem, setYield,
   getIngredients, createIngredient, updateIngredient,
   getRecipe, addRecipeItem, updateRecipeItem, deleteRecipeItem
 };

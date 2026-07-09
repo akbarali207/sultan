@@ -7,7 +7,7 @@ const upload = require('../middleware/uploadMiddleware');
 const {
   getCategories, createCategory, updateCategory, deleteCategory,
   getMenuItems, createMenuItem, updateMenuItem, deleteMenuItem, setMenuAvailability, setDailyTracked, getMenuItemCost,
-  createPfItem,
+  createPfItem, setYield,
   getIngredients, createIngredient,
   getRecipe, addRecipeItem, updateRecipeItem, deleteRecipeItem
 } = require('../controllers/menuController');
@@ -24,6 +24,7 @@ router.post('/items', authMiddleware, adminOnly, upload.single('image'), createM
 router.put('/items/:id', authMiddleware, adminOnly, upload.single('image'), updateMenuItem);
 router.put('/items/:id/available', authMiddleware, adminOnly, setMenuAvailability); // stop-list
 router.put('/items/:id/daily-track', authMiddleware, adminOnly, setDailyTracked); // kunlik kuzat belgisi
+router.put('/items/:id/yield', authMiddleware, adminOnly, setYield); // partiya chiqishi (ВЫХОД, kg)
 router.delete('/items/:id', authMiddleware, adminOnly, deleteMenuItem);
 
 router.get('/ingredients', authMiddleware, adminOnly, getIngredients);
