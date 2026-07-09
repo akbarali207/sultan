@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:math';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'constants.dart';
@@ -103,6 +104,15 @@ class ApiService {
   /// Ishga tushganda va tarmoq xatosida chaqiriladi. Lokal manzil javob berса —
   /// lokalga o'tadi (internetsiz ham ishlaydi), aks holda — internet (remote).
   static Future<void> resolveBase() async {
+    // WEB: sahifa QAYSI manzildan ochilgan bo'lsa — API ham SHU origin (same-origin).
+    //  - http://<POS-PC-IP>:3000 dan ochilsa -> API lokal (internetsiz ishlaydi)
+    //  - https://sultanpos.net dan ochilsa -> API internet
+    // Mixed-content muammosi yo'q, qurilmada sozlash shart emas.
+    if (kIsWeb) {
+      AppConstants.baseUrl = '${Uri.base.origin}/api';
+      _mode = Uri.base.host == 'sultanpos.net' ? 'remote' : 'local';
+      return;
+    }
     final local = await getLocalServer();
     if (local == null) {
       AppConstants.baseUrl = AppConstants.remoteBaseUrl;
