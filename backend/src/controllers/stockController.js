@@ -4,7 +4,7 @@ const pool = require('../config/db');
 const getIngredients = async (req, res) => {
   try {
     const { category, warehouse_id } = req.query;
-    const conditions = [];
+    const conditions = ['COALESCE(is_active, true) = true']; // arxivlangan (soft-deleted) mahsulotlar ko'rinmaydi
     const params = [];
     if (warehouse_id) {
       params.push(warehouse_id);
@@ -298,40 +298,34 @@ const getStockHistory = async (req, res) => {
 const deleteIngredient = async (req, res) => {
   try {
     const { id } = req.params;
-    const check = await pool.query(
-      `SELECT stock_quantity FROM ingredients WHERE id = $1`,
-      [id]
-    );
+    const check = await pool.query(`SELECT stock_quantity FROM ingredients WHERE id = $1`, [id]);
     if (check.rows.length === 0) {
       return res.status(404).json({ message: 'Mahsulot topilmadi!' });
     }
-    const qty = parseFloat(check.rows[0].stock_quantity);
-    if (qty > 0) {
-      return res.status(400).json({ message: `Omborda ${qty} birlik qolgan. O'chirish uchun avval sarflang!` });
-    }
-    // FK bog'liqlik: retsept yoki menyu mahsulotida ishlatilsa — tushunarli 400 (raw 500 emas)
+    // Bog'liqlik bormi (retsept / menyu / kirim-inventar tarixi)?
     const deps = await pool.query(
       `SELECT
-         (SELECT COUNT(*) FROM recipe_items WHERE ingredient_id = $1) AS recipe_count,
-         (SELECT COUNT(*) FROM menu_items   WHERE ingredient_id = $1) AS menu_count`,
-      [id]
-    );
-    const recipeCount = parseInt(deps.rows[0].recipe_count, 10) || 0;
-    const menuCount = parseInt(deps.rows[0].menu_count, 10) || 0;
-    if (recipeCount > 0 || menuCount > 0) {
-      const parts = [];
-      if (recipeCount > 0) parts.push(`${recipeCount} ta retseptda`);
-      if (menuCount > 0) parts.push(`${menuCount} ta menyu mahsulotida`);
-      return res.status(400).json({
-        message: `Bu mahsulot ${parts.join(' va ')} ishlatilmoqda. Avval o'sha bog'lanishlarni olib tashlang!`,
-      });
+         (SELECT COUNT(*) FROM recipe_items    WHERE ingredient_id = $1) AS rc,
+         (SELECT COUNT(*) FROM menu_items      WHERE ingredient_id = $1) AS mc,
+         (SELECT COUNT(*) FROM inventory_items WHERE ingredient_id = $1) AS ic,
+         (SELECT COUNT(*) FROM stock_incoming  WHERE ingredient_id = $1) AS sc`,
+      [id]);
+    const d = deps.rows[0];
+    const inUse = ['rc','mc','ic','sc'].some((k) => (parseInt(d[k], 10) || 0) > 0);
+    if (inUse) {
+      // Bog'langan -> hard delete FK ni buzardi. Shuning uchun ARXIVLAYMIZ (skladdan ketadi, tarix saqlanadi).
+      await pool.query(`UPDATE ingredients SET is_active = false WHERE id = $1`, [id]);
+      // Menyu<->sklad sync: bu ingredientga bog'langan PRODUCT menyu mahsulotini ham arxivlaymiz
+      await pool.query(`UPDATE menu_items SET is_active = false WHERE ingredient_id = $1 AND type = 'product'`, [id]);
+      return res.json({ message: 'Mahsulot arxivlandi (bog\'lanishlari bor — tarix saqlanadi, skladdan olib tashlandi)' });
     }
-    // Qolgan FK (inventory_items/stock_incoming — tarixiy) bo'lsa ham raw 500 bermasin
+    // Bog'lanmagan — haqiqiy o'chirish
     try {
       await pool.query(`DELETE FROM ingredients WHERE id = $1`, [id]);
     } catch (e) {
-      if (e.code === '23503') {
-        return res.status(400).json({ message: 'Bu mahsulot inventarizatsiya yoki kirim tarixida bor — o\'chirib bo\'lmaydi' });
+      if (e.code === '23503') { // kutilmagan FK -> arxivlaymiz
+        await pool.query(`UPDATE ingredients SET is_active = false WHERE id = $1`, [id]);
+        return res.json({ message: 'Mahsulot arxivlandi (bog\'liq yozuvlar bor)' });
       }
       throw e;
     }
