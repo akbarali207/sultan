@@ -12,7 +12,9 @@ const getUsers = async (req, res) => {
               to_char(u.work_start, 'HH24:MI') as work_start,
               to_char(u.work_end, 'HH24:MI') as work_end,
               u.late_fine_per_minute, COALESCE(u.salary_day, 1) as salary_day,
-              COALESCE(u.salary_period_days, 30) as salary_period_days
+              COALESCE(u.salary_period_days, 30) as salary_period_days,
+              COALESCE(u.salary_tier_threshold, 0) as salary_tier_threshold,
+              COALESCE(u.salary_tier_value, 0) as salary_tier_value
        FROM users u
        JOIN roles r ON u.role_id = r.id
        ${hideGuest ? "WHERE r.name <> 'guest'" : ''}

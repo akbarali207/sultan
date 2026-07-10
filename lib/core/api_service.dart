@@ -258,7 +258,9 @@ class ApiService {
     addField('name', name);
     addField('price', price.toStringAsFixed(0));
     if (categoryId != null) addField('category_id', categoryId.toString());
-    if (stationIds != null && stationIds.isNotEmpty) {
+    // Bo'limlar: ro'yxat berilgan bo'lsa (bo'sh bo'lsa ham) station_ids yuboramiz — shunda tahrirlashда
+    // hamma bo'lim olib tashlansa backend "berilgan+bo'sh" deb tushunib tozalaydi (COALESCE eskisini saqlab qolmaydi).
+    if (stationIds != null) {
       addField('station_ids', stationIds.join(','));
     } else if (stationId != null) {
       addField('station_id', stationId.toString());

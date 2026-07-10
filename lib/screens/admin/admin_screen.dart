@@ -2180,6 +2180,8 @@ class _MenuSectionState extends State<MenuSection> with SingleTickerProviderStat
     String selectedUnit = 'kg';
     const units = ['kg', 'g', 'litr', 'ml', 'dona', 'pachka'];
     String ingredientName = '';
+    int? selectedIngredientId; // ro'yxatdan tanlansa: mavjud masaliq id — dublikat/0-narx yaratilmaydi
+    String selectedForName = '';
 
     return StatefulBuilder(
       builder: (context, setStateForm) => Column(
@@ -2202,6 +2204,10 @@ class _MenuSectionState extends State<MenuSection> with SingleTickerProviderStat
               final unit = option['unit'] as String? ?? 'kg';
               setStateForm(() {
                 ingredientName = option['name'] as String;
+                selectedForName = ingredientName;
+                selectedIngredientId = option['id'] is int
+                    ? option['id'] as int
+                    : int.tryParse(option['id']?.toString() ?? '');
                 selectedUnit = units.contains(unit) ? unit : 'kg';
               });
             },
@@ -2296,11 +2302,17 @@ class _MenuSectionState extends State<MenuSection> with SingleTickerProviderStat
               style: ElevatedButton.styleFrom(backgroundColor: AppTheme.accent),
               onPressed: () async {
                 if (ingredientName.trim().isEmpty || quantityController.text.isEmpty) return;
+                // Ro'yxatdan tanlangan bo'lsa (nom keyin o'zgartirilmagan) — mavjud masaliq id bilan ulaymiz;
+                // aks holda nom + sklad yuboramiz (shu skladda topiladi/yaratiladi — 0-narxli dublikat emas).
+                final useId = selectedIngredientId != null &&
+                    ingredientName.trim().toLowerCase() == selectedForName.trim().toLowerCase();
                 await ApiService.post(AppConstants.menuRecipe, {
                   'menu_item_id': menuItemId,
-                  'ingredient_name': ingredientName.trim(),
+                  if (useId) 'ingredient_id': selectedIngredientId,
+                  if (!useId) 'ingredient_name': ingredientName.trim(),
                   'unit': selectedUnit,
                   'quantity': double.tryParse(quantityController.text) ?? 0,
+                  if (!useId && _selectedWarehouseId != null) 'warehouse_id': _selectedWarehouseId,
                 });
                 onSaved();
               },
@@ -3587,24 +3599,35 @@ class _MenuSectionState extends State<MenuSection> with SingleTickerProviderStat
       );
 
   void _showIncomingDialog(Map<String, dynamic> ingredient) {
+    // Bog'langan menyu (product) yozuvi bo'lsa — joriy narx/kategoriyani shundan olamiz
+    final int? menuItemId = ingredient['menu_item_id'] == null
+        ? null
+        : int.tryParse(ingredient['menu_item_id'].toString());
+    final int? menuCategoryId = ingredient['menu_category_id'] == null
+        ? null
+        : int.tryParse(ingredient['menu_category_id'].toString());
+    final double menuPrice =
+        double.tryParse(ingredient['menu_price']?.toString() ?? '0') ?? 0;
+    final existingSellingPrice =
+        double.tryParse(ingredient['selling_price']?.toString() ?? '0') ?? 0;
+    // Ko'rsatiladigan sotish narxi: menyu narxi ustun, bo'lmasa ingredient selling_price
+    final double shownSell = menuPrice > 0 ? menuPrice : existingSellingPrice;
+
     final quantityController = TextEditingController();
     final priceController = TextEditingController();
     final sellingPriceController = TextEditingController(
-      text: ingredient['selling_price'] != null &&
-              ingredient['selling_price'].toString() != '0'
-          ? ingredient['selling_price'].toString()
-          : '',
+      text: shownSell > 0 ? shownSell.toStringAsFixed(0) : '',
     );
     final noteController = TextEditingController();
     final sourceController = TextEditingController();
     String method = 'cash';
     bool fromKassa = true;
     bool saving = false; // kirim yuborilmoqda — ikki marta bosishdan himoya
-    final existingSellingPrice =
-        double.tryParse(ingredient['selling_price']?.toString() ?? '0') ?? 0;
-    bool isSotuvga = existingSellingPrice > 0;
-    int? selectedCategoryId =
-        _categories.isNotEmpty ? _categories[0]['id'] as int : null;
+    // Sotuvda: menyu yozuvi bor yoki selling_price > 0
+    bool isSotuvga = menuItemId != null || existingSellingPrice > 0;
+    // Joriy kategoriya: menyudagi kategoriya ustun; bo'lmasa birinchisi (default default'ni ustidan yozmasin)
+    int? selectedCategoryId = menuCategoryId ??
+        (_categories.isNotEmpty ? _categories[0]['id'] as int : null);
 
     showDialog(
       context: context,
@@ -3764,30 +3787,21 @@ class _MenuSectionState extends State<MenuSection> with SingleTickerProviderStat
 
                 setStateDialog(() => saving = true);
                 try {
-                  // Idempotency-Key — kirim (kassa chiqimi) retry'da ikki marta yozilmasligi uchun
+                  // Idempotency-Key — kirim (kassa chiqimi) retry'da ikki marta yozilmasligi uchun.
+                  // is_retail + category_id serverga yuboriladi: backend menyu yozuvini UPSERT qiladi
+                  // (mavjud bo'lsa narx+kategoriya yangilanadi, bo'lmasa yaratiladi). Kategoriya/narx endi SAQLANADI.
                   await ApiService.post(AppConstants.stockIncoming, {
                     'ingredient_id': ingredient['id'],
                     'quantity': qty,
                     'price_per_unit': price,
                     'note': noteController.text,
-                    'selling_price': sellingPrice,
+                    'is_retail': isSotuvga,
+                    if (isSotuvga) 'selling_price': sellingPrice,
+                    if (isSotuvga) 'category_id': selectedCategoryId,
                     'method': method,
                     'from_kassa': fromKassa,
                     'source': fromKassa ? null : (sourceController.text.trim().isEmpty ? null : sourceController.text.trim()),
                   }, idempotencyKey: ApiService.newIdempotencyKey());
-
-                  if (isSotuvga && selectedCategoryId != null && sellingPrice > 0) {
-                    try {
-                      await ApiService.postWithImage(
-                        AppConstants.menuItems,
-                        name: ingredient['name'] as String,
-                        price: sellingPrice,
-                        categoryId: selectedCategoryId,
-                        type: 'product',
-                        ingredientId: ingredient['id'] as int,
-                      );
-                    } catch (_) {}
-                  }
 
                   if (context.mounted) Navigator.pop(context);
                   if (context.mounted) {
@@ -6775,6 +6789,15 @@ class _InventoryDetailScreenState extends State<InventoryDetailScreen> {
       ),
     );
     if (confirm == true) {
+      // Yakunlashdan OLDIN: klaviaturada "Done" bosilmay, faqat "Yakunlash" bosilganда fokusdagi
+      // maydon qiymati yo'qolmasин — har bir to'ldirilgan (bo'sh bo'lmagan) sanoqni serverga yuboramiz.
+      // (Bo'sh maydonlar tashlanadi — aks holda mavjud actual_quantity 0 ga tushib ketardi.)
+      for (final e in _controllers.entries) {
+        final t = e.value.text.trim();
+        if (t.isNotEmpty) {
+          await _updateItem(e.key, t);
+        }
+      }
       await ApiService.put('/inventory/${widget.inventoryId}/close', {});
       if (mounted) Navigator.pop(context);
     }

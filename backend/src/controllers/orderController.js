@@ -192,6 +192,12 @@ const createOrder = async (req, res) => {
         [table_id, waiter_id, notes || '']
       );
       orderId = orderResult.rows[0].id;
+    } else if (notes && notes.toString().trim()) {
+      // Mavjud zakazga qo'shilyapti — izoh yo'qolmasin, mavjud izohga qo'shamiz (moveOrder kabi)
+      await client.query(
+        `UPDATE orders SET notes = CONCAT_WS(' | ', NULLIF(notes, ''), $1) WHERE id = $2`,
+        [notes.toString().trim(), orderId]
+      );
     }
 
     // Narxni SERVERDA menu_items dan olamiz — mijoz yuborgan narxga ISHONMAYMIZ.

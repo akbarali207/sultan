@@ -1,24 +1,37 @@
 const pool = require('../config/db');
 
-// Barcha mahsulotlar (sklad) — sklad va kategoriya bo'yicha filtr
+// Barcha mahsulotlar (sklad) — sklad va kategoriya bo'yicha filtr.
+// Sotuvga chiqarilgan (product) mahsulot uchun bog'langan menyu yozuvi (id/kategoriya/narx) ham qaytadi,
+// shunda kirim oynasi joriy kategoriya/narxni to'g'ri ko'rsatadi (default bilan ustidan yozib yubormaydi).
 const getIngredients = async (req, res) => {
   try {
     const { category, warehouse_id } = req.query;
-    const conditions = ['COALESCE(is_active, true) = true']; // arxivlangan (soft-deleted) mahsulotlar ko'rinmaydi
+    const conditions = ['COALESCE(i.is_active, true) = true']; // arxivlangan (soft-deleted) mahsulotlar ko'rinmaydi
     const params = [];
     if (warehouse_id) {
       params.push(warehouse_id);
-      conditions.push(`warehouse_id = $${params.length}`);
+      conditions.push(`i.warehouse_id = $${params.length}`);
     }
     if (category) {
       params.push(category);
-      conditions.push(`category = $${params.length}`);
+      conditions.push(`i.category = $${params.length}`);
     }
-    let query = `SELECT * FROM ingredients`;
+    let query = `
+      SELECT i.*,
+             mi.id          AS menu_item_id,
+             mi.category_id AS menu_category_id,
+             mi.price       AS menu_price
+      FROM ingredients i
+      LEFT JOIN LATERAL (
+        SELECT id, category_id, price
+        FROM menu_items
+        WHERE ingredient_id = i.id AND type = 'product' AND is_active = true
+        ORDER BY id LIMIT 1
+      ) mi ON true`;
     if (conditions.length > 0) {
       query += ` WHERE ` + conditions.join(' AND ');
     }
-    query += ` ORDER BY name`;
+    query += ` ORDER BY i.name`;
     const result = await pool.query(query, params);
     res.json(result.rows);
   } catch (err) {
@@ -29,11 +42,11 @@ const getIngredients = async (req, res) => {
 // Mahsulot qo'shish (tanlangan skladga)
 const createIngredient = async (req, res) => {
   try {
-    const { name, unit, stock_quantity, min_quantity, price_per_unit, category, warehouse_id } = req.body;
+    const { name, unit, stock_quantity, min_quantity, price_per_unit, selling_price, category, warehouse_id } = req.body;
     const result = await pool.query(
-      `INSERT INTO ingredients (name, unit, stock_quantity, min_quantity, price_per_unit, category, warehouse_id)
-       VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
-      [name, unit, stock_quantity || 0, min_quantity || 0, price_per_unit || 0, category || null, warehouse_id || null]
+      `INSERT INTO ingredients (name, unit, stock_quantity, min_quantity, price_per_unit, selling_price, category, warehouse_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
+      [name, unit, stock_quantity || 0, min_quantity || 0, price_per_unit || 0, selling_price || 0, category || null, warehouse_id || null]
     );
     res.status(201).json(result.rows[0]);
   } catch (err) {
@@ -59,10 +72,12 @@ const addIncoming = async (req, res) => {
       [ingredient_id, quantity, price_per_unit, total_amount, note, method, sourceText]
     );
 
+    // Mahsulot nomi (kassa izohi + menyu upsert uchun bir marta o'qiymiz)
+    const ingRow = await client.query(`SELECT name FROM ingredients WHERE id = $1`, [ingredient_id]);
+    const ingName = (ingRow.rows[0] && ingRow.rows[0].name) ? ingRow.rows[0].name : 'Mahsulot';
+
     // Faqat Kassadan to'langanda va summa > 0 bo'lsa Kassadan chiqim qilamiz
     if (fromKassa && total_amount > 0) {
-      const ingRow = await client.query(`SELECT name FROM ingredients WHERE id = $1`, [ingredient_id]);
-      const ingName = (ingRow.rows[0] && ingRow.rows[0].name) ? ingRow.rows[0].name : 'Mahsulot';
       const txNote = note && note.toString().trim() ? `${ingName} — ${note}` : `${ingName} (sklad kirim)`;
       await client.query(
         `INSERT INTO cash_transactions (kind, method, amount, source, ref_id, note)
@@ -71,14 +86,41 @@ const addIncoming = async (req, res) => {
       );
     }
 
-    if (selling_price !== undefined && selling_price !== null) {
+    // "Sotuvga chiqarish" (retail) — is_retail bo'lsa selling_price yoziladi; aks holda TEGILMAYDI
+    // (ilgari bu yerda selling_price=0 yuborilib, sotuvdagi narx nolga tushib qolardi — endi tuzatildi).
+    const spRaw = (selling_price !== undefined && selling_price !== null) ? parseFloat(selling_price) : null;
+    const isRetail = (req.body.is_retail === true || req.body.is_retail === 'true')
+      || (req.body.is_retail === undefined && spRaw !== null && spRaw > 0);
+    const catId = (req.body.category_id !== undefined && req.body.category_id !== null && req.body.category_id !== '')
+      ? parseInt(req.body.category_id) : null;
+
+    if (isRetail && spRaw !== null && spRaw > 0) {
       await client.query(
         `UPDATE ingredients
          SET stock_quantity = stock_quantity + $1, price_per_unit = $2, selling_price = $3
          WHERE id = $4`,
-        [quantity, price_per_unit, selling_price, ingredient_id]
+        [quantity, price_per_unit, spRaw, ingredient_id]
       );
+      // Menyu UPSERT: bog'langan product menyu yozuvi bo'lsa narx+kategoriyani YANGILAYMIZ (arxivdan ham qaytaramiz),
+      // bo'lmasa YANGI product yaratamiz. Shunday qilib kirim oynasidagi kategoriya/narx haqiqatan saqlanadi.
+      const ex = await client.query(
+        `SELECT id FROM menu_items WHERE ingredient_id = $1 AND type = 'product' ORDER BY is_active DESC, id ASC LIMIT 1`,
+        [ingredient_id]
+      );
+      if (ex.rows.length) {
+        await client.query(
+          `UPDATE menu_items SET price = $1, category_id = COALESCE($2, category_id), is_active = true WHERE id = $3`,
+          [spRaw, catId, ex.rows[0].id]
+        );
+      } else {
+        await client.query(
+          `INSERT INTO menu_items (category_id, name, price, type, ingredient_id, is_active)
+           VALUES ($1, $2, $3, 'product', $4, true)`,
+          [catId, ingName, spRaw, ingredient_id]
+        );
+      }
     } else {
+      // Oshxona ingredienti — faqat qoldiq va kirim narxi yangilanadi (selling_price tegilmaydi)
       await client.query(
         `UPDATE ingredients
          SET stock_quantity = stock_quantity + $1, price_per_unit = $2

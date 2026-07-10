@@ -632,6 +632,16 @@ class _RecipeLineDialogState extends State<_RecipeLineDialog> {
   int? _whId;
   bool get _isEdit => widget.line != null;
   static const _units = ['кг', 'л', 'шт', 'г', 'мл'];
+  // Tahrirlashда tegilmagan qiymat global ingredientda buzilmasin uchun asl qiymatlarni eslab qolamiz
+  String _origUnit = 'кг';
+  String _origPriceText = '';
+  // Dropdown ro'yxati: standart birliklar + agar joriy birlik ro'yxatда bo'lmasa (dona/pachka...) uni qo'shamiz
+  List<String> get _unitItems => _units.contains(_unit) ? _units : [..._units, _unit];
+  // Raqamни ortiqcha nol/rounding'siz ko'rsatish (narx aniqligi yo'qolmasin)
+  static String _fmtNum(dynamic v) {
+    final d = double.tryParse(v?.toString() ?? '') ?? 0;
+    return d == d.roundToDouble() ? d.toStringAsFixed(0) : d.toString();
+  }
 
   // --- Avto-qidiruv (mavjud masaliq tanlash) ---
   final FocusNode _nameFocus = FocusNode();
@@ -683,9 +693,12 @@ class _RecipeLineDialogState extends State<_RecipeLineDialog> {
     _yield = TextEditingController(
         text: l != null ? ((double.tryParse(l['yield_percent']?.toString() ?? '100') ?? 100).toStringAsFixed(0)) : '100');
     _price = TextEditingController(
-        text: l != null ? ((double.tryParse(l['price_per_unit']?.toString() ?? '0') ?? 0).toStringAsFixed(0)) : '');
+        text: l != null ? _fmtNum(l['price_per_unit']) : '');
+    // Birlikni AYNAN saqlaymiz — 'dona'/'pachka' kabi ro'yxatda yo'q birlik 'кг'ga aylanib ketmasin (global buzilish)
     _unit = l?['unit']?.toString() ?? 'кг';
-    if (!_units.contains(_unit)) _unit = 'кг';
+    if (_unit.isEmpty) _unit = 'кг';
+    _origUnit = _unit;
+    _origPriceText = _price.text;
   }
 
   @override
@@ -760,11 +773,15 @@ class _RecipeLineDialogState extends State<_RecipeLineDialog> {
     try {
       dynamic res;
       if (_isEdit) {
-        // P/F satri: narx/birlik yuborilmaydi (P/F narxi o'z retseptidan sync bo'ladi)
-        res = await ApiService.put('/menu/recipe/${widget.line!['id']}',
-            _isPfLine
-                ? {'quantity': _b, 'yield_percent': _y}
-                : {'quantity': _b, 'yield_percent': _y, 'price_per_unit': _p, 'unit': _unit});
+        // P/F satri: narx/birlik yuborilmaydi (P/F narxi o'z retseptidan sync bo'ladi).
+        // Oddiy masaliq: narx/birlik FAQAT foydalanuvchi o'zgartirgan bo'lsa yuboriladi —
+        // tegilmagan qiymat serverda COALESCE/CASE bilan saqlanadi, global ingredient buzilmaydi.
+        final body = <String, dynamic>{'quantity': _b, 'yield_percent': _y};
+        if (!_isPfLine) {
+          if (_price.text.trim() != _origPriceText.trim()) body['price_per_unit'] = _p;
+          if (_unit != _origUnit) body['unit'] = _unit;
+        }
+        res = await ApiService.put('/menu/recipe/${widget.line!['id']}', body);
       } else if (_pfMode) {
         // POLUFABRIKAT — mavjud П/Ф masaliq to'g'ridan-to'g'ri ulanadi
         res = await ApiService.post('/menu/recipe', {
@@ -935,7 +952,7 @@ class _RecipeLineDialogState extends State<_RecipeLineDialog> {
                     dropdownColor: AppTheme.card,
                     style: TextStyle(color: AppTheme.text),
                     decoration: _dec(tr('Birlik')),
-                    items: _units
+                    items: _unitItems
                         .map((u) => DropdownMenuItem(value: u, child: Text(u, style: TextStyle(color: AppTheme.text))))
                         .toList(),
                     onChanged: (v) => setState(() => _unit = v ?? 'кг'),
@@ -1113,7 +1130,7 @@ class _RecipeLineDialogState extends State<_RecipeLineDialog> {
                       dropdownColor: AppTheme.card,
                       style: TextStyle(color: AppTheme.text),
                       decoration: _dec(tr('Birlik')),
-                      items: _units
+                      items: _unitItems
                           .map((u) => DropdownMenuItem(value: u, child: Text(u, style: TextStyle(color: AppTheme.text))))
                           .toList(),
                       onChanged: (v) => setState(() => _unit = v ?? 'кг'),
