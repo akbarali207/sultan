@@ -200,6 +200,14 @@ const editIngredient = async (req, res) => {
       [nName, nUnit, nMin, nPrice, nSell, nStock, id]
     );
 
+    // Menyu<->sklad NOM SYNC: skladda nom o'zgarsa, bog'langan product/pf menyu nomi ham yangilanadi
+    // (menyu = sklad = analitika bir xil bo'lishi uchun).
+    if (nName !== old.name) {
+      await client.query(
+        `UPDATE menu_items SET name = $1 WHERE ingredient_id = $2 AND type IN ('product','pf')`,
+        [nName, id]);
+    }
+
     let userName = null;
     if (req.user && req.user.id) {
       const u = await client.query('SELECT full_name FROM users WHERE id = $1', [req.user.id]);
