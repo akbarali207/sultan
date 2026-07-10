@@ -790,12 +790,14 @@ const addSalaryPayment = async (req, res) => {
       [user_id, amt, method, kind, note || null, sourceText, isDate ? date : null]
     );
     const pay = r.rows[0];
-    // Faqat Kassadan to'langanda Kassa balansidan chiqim qilamiz
+    // Faqat Kassadan to'langanda Kassa balansidan chiqim qilamiz.
+    // created_at TO'LOV sanasi bilan bir xil (backdate bo'lsa ham) — aks holда analitikada
+    // salary_payments (o'tgan davr) va cash_transactions (bugun) turli davrga tushib, mehnat xarajati ikki bo'linardi.
     if (fromKassa) {
       await client.query(
-        `INSERT INTO cash_transactions (kind, method, amount, source, ref_id, note)
-         VALUES ('expense', $1, $2, $3, $4, $5)`,
-        [method, amt, kind, pay.id, kind === 'salary' ? 'Oylik' : 'Avans']
+        `INSERT INTO cash_transactions (kind, method, amount, source, ref_id, note, created_at)
+         VALUES ('expense', $1, $2, $3, $4, $5, COALESCE($6::timestamp, NOW()))`,
+        [method, amt, kind, pay.id, kind === 'salary' ? 'Oylik' : 'Avans', isDate ? date : null]
       );
     }
     await client.query('COMMIT');

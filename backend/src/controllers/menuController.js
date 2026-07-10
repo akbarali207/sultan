@@ -215,7 +215,7 @@ const createMenuItem = async (req, res) => {
     }
     const { category_id, name, price, type, ingredient_id } = req.body;
     const cleanName = (name || '').toString().replace(/\s+/g, ' ').trim(); // ETAP 5: ortiqcha probel tozalanadi
-    if (!cleanName) { client.release(); return res.status(400).json({ message: 'Taom nomi kerak' }); }
+    if (!cleanName) { return res.status(400).json({ message: 'Taom nomi kerak' }); } // finally o'zi release qiladi (ikki marta emas)
     const image_url = req.file ? `/uploads/menu/${req.file.filename}` : null;
     const itemType = type || 'recipe';
     const ingId = ingredient_id ? parseInt(ingredient_id) : null;

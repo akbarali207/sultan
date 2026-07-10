@@ -393,8 +393,9 @@ const deleteIngredient = async (req, res) => {
     if (inUse) {
       // Bog'langan -> hard delete FK ni buzardi. Shuning uchun ARXIVLAYMIZ (skladdan ketadi, tarix saqlanadi).
       await pool.query(`UPDATE ingredients SET is_active = false WHERE id = $1`, [id]);
-      // Menyu<->sklad sync: bu ingredientga bog'langan PRODUCT menyu mahsulotini ham arxivlaymiz
-      await pool.query(`UPDATE menu_items SET is_active = false WHERE ingredient_id = $1 AND type = 'product'`, [id]);
+      // Menyu<->sklad sync: bu ingredientga bog'langan PRODUCT yoki P/F menyu yozuvini ham arxivlaymiz
+      // (P/F ham — aks holda skladdan ketган P/F ishlab-chiqarish/retsept ro'yxatida "faol" bo'lib qolardi)
+      await pool.query(`UPDATE menu_items SET is_active = false WHERE ingredient_id = $1 AND type IN ('product', 'pf')`, [id]);
       return res.json({ message: 'Mahsulot arxivlandi (bog\'lanishlari bor — tarix saqlanadi, skladdan olib tashlandi)' });
     }
     // Bog'lanmagan — haqiqiy o'chirish
