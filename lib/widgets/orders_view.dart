@@ -316,21 +316,19 @@ class _OrdersViewState extends State<OrdersView> {
         ),
       );
 
-  // Zakazni boshqa stolga ko'chirish / birlashtirish
-  Future<void> _moveOrder(Map order) async {
-    if (_mutating) return;
+  // Maqsad stolni tanlash dialogi (ko'chirish uchun umumiy). Tanlangan table id qaytaradi.
+  Future<int?> _pickTargetTable(dynamic currentTableId, {String? title}) async {
     List<dynamic> tables = [];
     try {
       final r = await ApiService.get(AppConstants.tables);
       tables = r is List ? r : [];
     } catch (_) {}
-    if (!mounted) return;
-    final currentTableId = order['table_id'];
-    final picked = await showDialog<int>(
+    if (!mounted) return null;
+    return showDialog<int>(
       context: context,
       builder: (_) => AlertDialog(
         backgroundColor: _card,
-        title: Text(tr('Stolni ko\'chirish / birlashtirish'), style: TextStyle(color: _text, fontSize: 16)),
+        title: Text(title ?? tr('Stolni ko\'chirish / birlashtirish'), style: TextStyle(color: _text, fontSize: 16)),
         content: SizedBox(
           width: 340,
           child: SingleChildScrollView(
@@ -369,6 +367,12 @@ class _OrdersViewState extends State<OrdersView> {
         ],
       ),
     );
+  }
+
+  // Zakazni BUTUNLIGICHA boshqa stolga ko'chirish / birlashtirish
+  Future<void> _moveOrder(Map order) async {
+    if (_mutating) return;
+    final picked = await _pickTargetTable(order['table_id']);
     if (picked == null) return;
     setState(() => _mutating = true);
     try {
@@ -394,6 +398,117 @@ class _OrdersViewState extends State<OrdersView> {
       if (mounted) setState(() => _mutating = false);
     }
   }
+
+  // Zakazni QISMAN ko'chirish: taomlarni tanlab, har biridan nechtadan ko'chirishni belgilaydi.
+  Future<void> _moveOrderItems(Map order) async {
+    if (_mutating) return;
+    final items = (order['items'] is List ? order['items'] as List : [])
+        .where((oi) => oi != null && oi['id'] != null && ((num.tryParse(oi['quantity']?.toString() ?? '0') ?? 0) > 0))
+        .toList();
+    if (items.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(tr('Ko\'chiriladigan taom yo\'q')), backgroundColor: Colors.orange));
+      return;
+    }
+    // order_item id -> ko'chiriladigan miqdor
+    final Map<int, int> sel = {for (final oi in items) oi['id'] as int: 0};
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (_) => StatefulBuilder(
+        builder: (ctx, setSt) {
+          int chosenCount() => sel.values.fold(0, (a, b) => a + b);
+          return AlertDialog(
+            backgroundColor: _card,
+            title: Text(tr('Qaysi taomni ko\'chiramiz?'), style: TextStyle(color: _text, fontSize: 16)),
+            content: SizedBox(
+              width: 360,
+              child: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: items.map<Widget>((oi) {
+                    final id = oi['id'] as int;
+                    final have = (num.tryParse(oi['quantity']?.toString() ?? '0') ?? 0).toInt();
+                    final cur = sel[id] ?? 0;
+                    return Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 4),
+                      child: Row(
+                        children: [
+                          Expanded(
+                            child: Text('${oi['name'] ?? ''}  ·  ${tr('bor')}: $have',
+                                style: TextStyle(color: _text, fontSize: 13)),
+                          ),
+                          _moveStep(Icons.remove, cur > 0 ? () => setSt(() => sel[id] = cur - 1) : null),
+                          SizedBox(
+                            width: 28,
+                            child: Text('$cur',
+                                textAlign: TextAlign.center,
+                                style: TextStyle(color: _accent, fontWeight: FontWeight.bold, fontSize: 15)),
+                          ),
+                          _moveStep(Icons.add, cur < have ? () => setSt(() => sel[id] = cur + 1) : null),
+                        ],
+                      ),
+                    );
+                  }).toList(),
+                ),
+              ),
+            ),
+            actions: [
+              TextButton(onPressed: () => Navigator.pop(ctx, false),
+                  child: Text(tr('Bekor'), style: TextStyle(color: _textSoft))),
+              ElevatedButton(
+                style: ElevatedButton.styleFrom(backgroundColor: _accent),
+                onPressed: chosenCount() > 0 ? () => Navigator.pop(ctx, true) : null,
+                child: Text('${tr('Davom')} (${chosenCount()})', style: const TextStyle(color: Colors.white)),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+    if (confirmed != true) return;
+    final payload = sel.entries.where((e) => e.value > 0)
+        .map((e) => {'order_item_id': e.key, 'quantity': e.value}).toList();
+    if (payload.isEmpty) return;
+    // Hammasini tanlagan bo'lsa — butun ko'chirish bilan bir xil, lekin move-items ham to'g'ri ishlaydi.
+    if (!mounted) return;
+    final picked = await _pickTargetTable(order['table_id'], title: tr('Qaysi stolga ko\'chiramiz?'));
+    if (picked == null) return;
+    setState(() => _mutating = true);
+    try {
+      final res = await ApiService.put('${AppConstants.orders}/${order['id']}/move-items',
+          {'table_id': picked, 'items': payload}, idempotencyKey: ApiService.newIdempotencyKey());
+      if (!mounted) return;
+      if (res is Map && res['ok'] != true && res['message'] != null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text(res['message'].toString()), backgroundColor: Colors.red));
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text(tr('Taomlar ko\'chirildi')), backgroundColor: Colors.green));
+      }
+      await _load();
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('${tr('Xato')}: $e'), backgroundColor: Colors.red));
+      }
+    } finally {
+      if (mounted) setState(() => _mutating = false);
+    }
+  }
+
+  // Kichik +/- tugma (qisman ko'chirish stepperi uchun; null = o'chirilgan)
+  Widget _moveStep(IconData ic, VoidCallback? onTap) => InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(8),
+        child: Container(
+          padding: const EdgeInsets.all(6),
+          decoration: BoxDecoration(
+            color: (onTap == null ? _textSoft : _accent).withValues(alpha: 0.12),
+            borderRadius: BorderRadius.circular(8),
+          ),
+          child: Icon(ic, size: 18, color: onTap == null ? _textSoft : _accent),
+        ),
+      );
 
   // To'langan zakazni QAYTA OCHISH — noto'g'ri to'lovni tuzatish uchun
   Future<void> _reopenOrder(Map o) async {
@@ -618,6 +733,9 @@ class _OrdersViewState extends State<OrdersView> {
                         children: [
                           // ↔ Stolni ko'chirish/birlashtirish — HAMMA (o'z zakazini)
                           _statusBtn(tr('↔ Ko\'chirish'), Colors.deepPurple, () => _moveOrder(order)),
+                          // ⇢ Qisman ko'chirish — tanlangan taomlar/miqdor
+                          if (itemList.isNotEmpty)
+                            _statusBtn(tr('⇢ Qisman'), Colors.indigo, () => _moveOrderItems(order)),
                           // 🧾 Счёт (pri-chek) — HAMMA (oddiy ofitsant ham) chiqara oladi
                           _statusBtn(tr('🧾 Hisob (Счёт)'), Colors.blue, () => _printBill(order['id'] as int)),
                           // O'chirish + Tugatish (to'lov) — FAQAT kassir/admin
