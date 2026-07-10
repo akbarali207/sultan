@@ -1,6 +1,16 @@
 const bcrypt = require('bcryptjs');
 const pool = require('../config/db');
 
+// Rol tayinlash huquqi:
+//  - 'guest' (yashirin egasi) — FAQAT guest o'zi bera/tahrirlay oladi (maxfiy egani himoya).
+//  - 'director' — guest YOKI director bera oladi (direktor to'liq boshqaruvga ega).
+//  - boshqa rollar (admin/cashier/waiter) — panelга kirgan har qanday menejer (route allaqachon cheklaydi).
+const canAssignRole = (callerRole, targetRole) => {
+  if (targetRole === 'guest') return callerRole === 'guest';
+  if (targetRole === 'director') return callerRole === 'guest' || callerRole === 'director';
+  return true;
+};
+
 // Barcha xodimlar
 const getUsers = async (req, res) => {
   try {
@@ -35,10 +45,10 @@ const createUser = async (req, res) => {
     const tth = (salary_tier_threshold !== undefined && salary_tier_threshold !== null && salary_tier_threshold !== '') ? salary_tier_threshold : null;
     const ttv = (salary_tier_value !== undefined && salary_tier_value !== null && salary_tier_value !== '') ? salary_tier_value : null;
 
-    // Rol nazorati: admin guest/director yaratolmaydi — faqat guest o'zi qila oladi
+    // Rol nazorati: guest'ni faqat guest, director'ni guest yoki director tayinlaydi
     const targetRole = await pool.query(`SELECT name FROM roles WHERE id=$1`, [role_id]);
     const targetRoleName = targetRole.rows[0] && targetRole.rows[0].name;
-    if ((targetRoleName === 'guest' || targetRoleName === 'director') && !(req.user && req.user.role === 'guest')) {
+    if (!canAssignRole(req.user && req.user.role, targetRoleName)) {
       return res.status(403).json({ message: 'Bu rolni tayinlash uchun ruxsat yo\'q!' });
     }
 
@@ -79,11 +89,11 @@ const updateUser = async (req, res) => {
       return res.status(403).json({ message: 'Bu xodimni tahrirlash uchun ruxsat yo\'q!' });
     }
 
-    // Yangi rol tayinlanayotgan bo'lsa: admin guest/director berolmaydi
+    // Yangi rol tayinlanayotgan bo'lsa: guest'ni faqat guest, director'ni guest yoki director
     if (role_id !== undefined && role_id !== null) {
       const targetRole = await pool.query(`SELECT name FROM roles WHERE id=$1`, [role_id]);
       const targetRoleName = targetRole.rows[0] && targetRole.rows[0].name;
-      if ((targetRoleName === 'guest' || targetRoleName === 'director') && !isGuestCaller) {
+      if (!canAssignRole(req.user && req.user.role, targetRoleName)) {
         return res.status(403).json({ message: 'Bu rolni tayinlash uchun ruxsat yo\'q!' });
       }
     }

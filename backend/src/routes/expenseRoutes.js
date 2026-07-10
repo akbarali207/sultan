@@ -2,7 +2,7 @@ const express = require('express');
 const router = express.Router();
 const authMiddleware = require('../middleware/authMiddleware');
 const { requireRole } = require('../middleware/roleMiddleware');
-const adminOnly = requireRole('admin');
+const adminOnly = requireRole('admin', 'director', 'guest');
 const {
   getExpenseTypes,
   createExpenseType,
