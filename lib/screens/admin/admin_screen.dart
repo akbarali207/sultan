@@ -13,6 +13,7 @@ import '../../core/api_service.dart';
 import '../../core/constants.dart';
 import '../../core/app_theme.dart';
 import '../../core/lang.dart';
+import '../../core/num_input.dart';
 import 'analytics_page.dart';
 import '../../widgets/table_with_chairs.dart';
 import '../../widgets/orders_view.dart';
@@ -496,7 +497,7 @@ class _DashboardSectionState extends State<DashboardSection> {
                     height: 34,
                     child: TextField(
                       controller: ctrl,
-                      keyboardType: TextInputType.number,
+                      keyboardType: TextInputType.numberWithOptions(decimal: true),
                       textAlign: TextAlign.center,
                       style: TextStyle(color: AppTheme.text, fontSize: 13),
                       decoration: InputDecoration(
@@ -1034,11 +1035,11 @@ class _ExpensesSectionState extends State<ExpensesSection> {
                 const SizedBox(height: 12),
                 TextField(controller: nameCtrl, style: TextStyle(color: AppTheme.text), decoration: deco(tr('Nomi (masalan: Mol go\'shti)'))),
                 const SizedBox(height: 12),
-                TextField(controller: amountCtrl, keyboardType: TextInputType.number, style: TextStyle(color: AppTheme.text), decoration: deco(tr('Summa (сом)'))),
+                TextField(controller: amountCtrl, keyboardType: TextInputType.numberWithOptions(decimal: true), style: TextStyle(color: AppTheme.text), decoration: deco(tr('Summa (сом)'))),
                 const SizedBox(height: 12),
                 Row(
                   children: [
-                    Expanded(child: TextField(controller: qtyCtrl, keyboardType: TextInputType.number, style: TextStyle(color: AppTheme.text), decoration: deco(tr('Miqdor (ixtiyoriy)')))),
+                    Expanded(child: TextField(controller: qtyCtrl, keyboardType: TextInputType.numberWithOptions(decimal: true), style: TextStyle(color: AppTheme.text), decoration: deco(tr('Miqdor (ixtiyoriy)')))),
                     const SizedBox(width: 8),
                     Expanded(child: TextField(controller: unitCtrl, style: TextStyle(color: AppTheme.text), decoration: deco(tr('O\'lchov (kg/dona)')))),
                   ],
@@ -1818,7 +1819,8 @@ class _MenuSectionState extends State<MenuSection> with SingleTickerProviderStat
   Widget _buildTextField(TextEditingController controller, String label, IconData icon, {bool isNumber = false, VoidCallback? onTap}) {
     return TextField(
       controller: controller,
-      keyboardType: isNumber ? TextInputType.number : TextInputType.text,
+      keyboardType: isNumber ? const TextInputType.numberWithOptions(decimal: true) : TextInputType.text,
+      inputFormatters: isNumber ? decimalFormatters : null,
       style: TextStyle(color: AppTheme.text),
       decoration: _inputDecoration(label, icon),
       onTap: onTap,
@@ -3275,7 +3277,7 @@ class _MenuSectionState extends State<MenuSection> with SingleTickerProviderStat
             TextField(
               controller: qtyC,
               autofocus: true,
-              keyboardType: TextInputType.number,
+              keyboardType: TextInputType.numberWithOptions(decimal: true),
               style: TextStyle(color: AppTheme.text),
               decoration: InputDecoration(
                 labelText: '${tr('Miqdori')} (${ing['unit']})',
@@ -4267,7 +4269,7 @@ class _StaffSectionState extends State<StaffSection> {
     return TextField(
       controller: controller,
       obscureText: isPassword,
-      keyboardType: isNumber ? TextInputType.number : TextInputType.text,
+      keyboardType: isNumber ? TextInputType.numberWithOptions(decimal: true) : TextInputType.text,
       style: TextStyle(color: AppTheme.text),
       decoration: _inputDecoration(label, icon),
     );
@@ -5149,7 +5151,7 @@ class _PrintStationsScreenState extends State<PrintStationsScreen> {
                 if (connType == 'net') ...[
                   TextField(controller: ipCtrl, style: TextStyle(color: AppTheme.text), decoration: deco(tr('Printer IP (masalan: 192.168.1.50)'))),
                   const SizedBox(height: 12),
-                  TextField(controller: portCtrl, style: TextStyle(color: AppTheme.text), keyboardType: TextInputType.number, decoration: deco(tr('Port (odatda 9100)'))),
+                  TextField(controller: portCtrl, style: TextStyle(color: AppTheme.text), keyboardType: TextInputType.numberWithOptions(decimal: true), decoration: deco(tr('Port (odatda 9100)'))),
                 ] else if (connType == 'usb') ...[
                   if (printerNames.isEmpty)
                     Text(tr('Printer topilmadi. USB printerni ulab, ilovani qayta oching.'),
@@ -6484,9 +6486,9 @@ class _TablewareCatalogScreenState extends State<TablewareCatalogScreen> {
               const SizedBox(height: 12),
               TextField(controller: unitCtrl, style: TextStyle(color: AppTheme.text), decoration: deco(tr('O\'lchov (dona/komplekt)'))),
               const SizedBox(height: 12),
-              TextField(controller: qtyCtrl, style: TextStyle(color: AppTheme.text), keyboardType: TextInputType.number, decoration: deco(tr('Mavjud soni'))),
+              TextField(controller: qtyCtrl, style: TextStyle(color: AppTheme.text), keyboardType: TextInputType.numberWithOptions(decimal: true), decoration: deco(tr('Mavjud soni'))),
               const SizedBox(height: 12),
-              TextField(controller: priceCtrl, style: TextStyle(color: AppTheme.text), keyboardType: TextInputType.number, decoration: deco(tr('Bittasining narxi (so\'m)'))),
+              TextField(controller: priceCtrl, style: TextStyle(color: AppTheme.text), keyboardType: TextInputType.numberWithOptions(decimal: true), decoration: deco(tr('Bittasining narxi (so\'m)'))),
             ],
           ),
         ),
@@ -7274,7 +7276,7 @@ class _InventoryDetailScreenState extends State<InventoryDetailScreen> {
                                   child: TextField(
                                     controller: _controllers[itemId],
                                     keyboardType: isDona
-                                        ? TextInputType.number
+                                        ? TextInputType.numberWithOptions(decimal: true)
                                         : const TextInputType.numberWithOptions(decimal: true),
                                     style: TextStyle(color: AppTheme.text),
                                     onTap: () => _controllers[itemId]?.clear(),
@@ -7550,14 +7552,14 @@ class _FloorPlanSectionState extends State<FloorPlanSection> {
             TextField(
               controller: numberCtrl,
               autofocus: true,
-              keyboardType: TextInputType.number,
+              keyboardType: TextInputType.numberWithOptions(decimal: true),
               style: TextStyle(color: AppTheme.text),
               decoration: _dec(tr('Stol raqami'), Icons.tag),
             ),
             const SizedBox(height: 12),
             TextField(
               controller: seatsCtrl,
-              keyboardType: TextInputType.number,
+              keyboardType: TextInputType.numberWithOptions(decimal: true),
               style: TextStyle(color: AppTheme.text),
               decoration: _dec(tr('Necha kishilik'), Icons.event_seat),
             ),
@@ -7606,14 +7608,14 @@ class _FloorPlanSectionState extends State<FloorPlanSection> {
           children: [
             TextField(
               controller: numberCtrl,
-              keyboardType: TextInputType.number,
+              keyboardType: TextInputType.numberWithOptions(decimal: true),
               style: TextStyle(color: AppTheme.text),
               decoration: _dec(tr('Stol raqami'), Icons.tag),
             ),
             const SizedBox(height: 12),
             TextField(
               controller: seatsCtrl,
-              keyboardType: TextInputType.number,
+              keyboardType: TextInputType.numberWithOptions(decimal: true),
               style: TextStyle(color: AppTheme.text),
               decoration: _dec(tr('Necha kishilik'), Icons.event_seat),
             ),
@@ -8708,7 +8710,7 @@ class _PayslipDialogState extends State<_PayslipDialog> {
             const SizedBox(height: 8),
             TextField(
               controller: ctrl,
-              keyboardType: TextInputType.number,
+              keyboardType: TextInputType.numberWithOptions(decimal: true),
               autofocus: true,
               style: TextStyle(color: AppTheme.text),
               decoration: InputDecoration(
@@ -8790,7 +8792,7 @@ class _PayslipDialogState extends State<_PayslipDialog> {
               const SizedBox(height: 8),
               TextField(
                 controller: valCtrl,
-                keyboardType: TextInputType.number,
+                keyboardType: TextInputType.numberWithOptions(decimal: true),
                 autofocus: true,
                 style: TextStyle(color: AppTheme.text),
                 decoration: InputDecoration(
@@ -8881,7 +8883,7 @@ class _PayslipDialogState extends State<_PayslipDialog> {
           children: [
             TextField(
               controller: amtCtrl,
-              keyboardType: TextInputType.number,
+              keyboardType: TextInputType.numberWithOptions(decimal: true),
               autofocus: true,
               style: TextStyle(color: AppTheme.text),
               decoration: InputDecoration(
@@ -8948,7 +8950,7 @@ class _PayslipDialogState extends State<_PayslipDialog> {
             children: [
               TextField(
                 controller: amtCtrl,
-                keyboardType: TextInputType.number,
+                keyboardType: TextInputType.numberWithOptions(decimal: true),
                 autofocus: true,
                 style: TextStyle(color: AppTheme.text),
                 decoration: InputDecoration(

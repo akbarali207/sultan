@@ -894,7 +894,7 @@ class _RecipeLineDialogState extends State<_RecipeLineDialog> {
               const SizedBox(height: 10),
               TextField(
                 controller: _brutto,
-                keyboardType: TextInputType.number,
+                keyboardType: TextInputType.numberWithOptions(decimal: true),
                 style: TextStyle(color: AppTheme.text),
                 onChanged: (_) => setState(() {}),
                 decoration: _dec(tr('Brutto (xom)')),
@@ -946,7 +946,7 @@ class _RecipeLineDialogState extends State<_RecipeLineDialog> {
                 Expanded(
                   child: TextField(
                     controller: _brutto,
-                    keyboardType: TextInputType.number,
+                    keyboardType: TextInputType.numberWithOptions(decimal: true),
                     style: TextStyle(color: AppTheme.text),
                     onChanged: (_) => setState(() {}),
                     decoration: _dec(tr('Brutto (xom)')),
@@ -958,7 +958,7 @@ class _RecipeLineDialogState extends State<_RecipeLineDialog> {
                 Expanded(
                   child: TextField(
                     controller: _yield,
-                    keyboardType: TextInputType.number,
+                    keyboardType: TextInputType.numberWithOptions(decimal: true),
                     style: TextStyle(color: AppTheme.text),
                     onChanged: (_) => setState(() {}),
                     decoration: _dec(tr('Chiqish %')),
@@ -969,7 +969,7 @@ class _RecipeLineDialogState extends State<_RecipeLineDialog> {
                   Expanded(
                     child: TextField(
                       controller: _price,
-                      keyboardType: TextInputType.number,
+                      keyboardType: TextInputType.numberWithOptions(decimal: true),
                       style: TextStyle(color: AppTheme.text),
                       onChanged: (_) => setState(() {}),
                       decoration: _dec(tr('Narx (1 birlik)')),
@@ -1070,7 +1070,7 @@ class _RecipeLineDialogState extends State<_RecipeLineDialog> {
                   Expanded(
                     child: TextField(
                       controller: _brutto,
-                      keyboardType: TextInputType.number,
+                      keyboardType: TextInputType.numberWithOptions(decimal: true),
                       style: TextStyle(color: AppTheme.text),
                       onChanged: (_) => setState(() {}),
                       decoration: _dec(tr('Brutto (xom)')),
@@ -1080,7 +1080,7 @@ class _RecipeLineDialogState extends State<_RecipeLineDialog> {
                   Expanded(
                     child: TextField(
                       controller: _yield,
-                      keyboardType: TextInputType.number,
+                      keyboardType: TextInputType.numberWithOptions(decimal: true),
                       style: TextStyle(color: AppTheme.text),
                       onChanged: (_) => setState(() {}),
                       decoration: _dec(tr('Chiqish %')),
@@ -1124,7 +1124,7 @@ class _RecipeLineDialogState extends State<_RecipeLineDialog> {
                   Expanded(
                     child: TextField(
                       controller: _brutto,
-                      keyboardType: TextInputType.number,
+                      keyboardType: TextInputType.numberWithOptions(decimal: true),
                       style: TextStyle(color: AppTheme.text),
                       onChanged: (_) => setState(() {}),
                       decoration: _dec(tr('Brutto (xom)')),
@@ -1136,7 +1136,7 @@ class _RecipeLineDialogState extends State<_RecipeLineDialog> {
                   Expanded(
                     child: TextField(
                       controller: _yield,
-                      keyboardType: TextInputType.number,
+                      keyboardType: TextInputType.numberWithOptions(decimal: true),
                       style: TextStyle(color: AppTheme.text),
                       onChanged: (_) => setState(() {}),
                       decoration: _dec(tr('Chiqish %')),
@@ -1146,7 +1146,7 @@ class _RecipeLineDialogState extends State<_RecipeLineDialog> {
                   Expanded(
                     child: TextField(
                       controller: _price,
-                      keyboardType: TextInputType.number,
+                      keyboardType: TextInputType.numberWithOptions(decimal: true),
                       style: TextStyle(color: AppTheme.text),
                       onChanged: (_) => setState(() {}),
                       decoration: _dec(tr('Narx (1 birlik)')),

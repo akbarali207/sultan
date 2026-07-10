@@ -885,7 +885,7 @@ class _CashboxViewState extends State<CashboxView> {
                     const SizedBox(width: 10),
                     Expanded(child: SizedBox(height: 38, child: TextField(
                       controller: _amountCtrl,
-                      keyboardType: TextInputType.number,
+                      keyboardType: TextInputType.numberWithOptions(decimal: true),
                       onChanged: (_) => setState(() {}),
                       style: TextStyle(color: AppTheme.text, fontSize: 13),
                       decoration: InputDecoration(
@@ -1252,7 +1252,7 @@ class _CashboxViewState extends State<CashboxView> {
               const SizedBox(height: 10),
               TextField(
                 controller: ctrl,
-                keyboardType: TextInputType.number,
+                keyboardType: TextInputType.numberWithOptions(decimal: true),
                 autofocus: true,
                 style: TextStyle(color: AppTheme.text),
                 decoration: InputDecoration(
@@ -1325,7 +1325,7 @@ class _CashboxViewState extends State<CashboxView> {
               const SizedBox(height: 8),
               TextField(
                 controller: ctrl,
-                keyboardType: TextInputType.number,
+                keyboardType: TextInputType.numberWithOptions(decimal: true),
                 autofocus: true,
                 style: TextStyle(color: AppTheme.text),
                 decoration: InputDecoration(
@@ -1382,7 +1382,7 @@ class _CashboxViewState extends State<CashboxView> {
             const SizedBox(height: 10),
             TextField(
               controller: ctrl,
-              keyboardType: TextInputType.number,
+              keyboardType: TextInputType.numberWithOptions(decimal: true),
               autofocus: true,
               style: TextStyle(color: AppTheme.text),
               decoration: InputDecoration(

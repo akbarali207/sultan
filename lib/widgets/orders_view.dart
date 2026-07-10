@@ -947,7 +947,7 @@ class _PaymentDialogState extends State<_PaymentDialog> {
                   width: 92,
                   child: TextField(
                     controller: _discCtrl,
-                    keyboardType: TextInputType.number,
+                    keyboardType: TextInputType.numberWithOptions(decimal: true),
                     style: TextStyle(color: AppTheme.text),
                     onChanged: (_) => setState(() {}),
                     decoration: _dec(tr('Chegirma'), suffix: '%'),
@@ -1016,7 +1016,7 @@ class _PaymentDialogState extends State<_PaymentDialog> {
                 Expanded(
                   child: TextField(
                     controller: _cardCtrl,
-                    keyboardType: TextInputType.number,
+                    keyboardType: TextInputType.numberWithOptions(decimal: true),
                     style: TextStyle(color: AppTheme.text),
                     onChanged: (_) => setState(() {}),
                     decoration: _dec(tr('Karta')),
@@ -1026,7 +1026,7 @@ class _PaymentDialogState extends State<_PaymentDialog> {
                 Expanded(
                   child: TextField(
                     controller: _debtCtrl,
-                    keyboardType: TextInputType.number,
+                    keyboardType: TextInputType.numberWithOptions(decimal: true),
                     style: TextStyle(color: AppTheme.text),
                     onChanged: (_) => setState(() {}),
                     decoration: _dec(tr('Qarz')),
@@ -1054,7 +1054,7 @@ class _PaymentDialogState extends State<_PaymentDialog> {
                 const SizedBox(height: 8),
                 TextField(
                   controller: _givenCashCtrl,
-                  keyboardType: TextInputType.number,
+                  keyboardType: TextInputType.numberWithOptions(decimal: true),
                   style: TextStyle(color: AppTheme.text),
                   onChanged: (_) => setState(() {}),
                   decoration: _dec(tr('Berilgan naqd')),
