@@ -213,17 +213,34 @@ const createMenuItem = async (req, res) => {
       return res.status(400).json({ message: 'req.body bo\'sh — multipart/form-data yuborilmagan' });
     }
     const { category_id, name, price, type, ingredient_id } = req.body;
+    const cleanName = (name || '').toString().replace(/\s+/g, ' ').trim(); // ETAP 5: ortiqcha probel tozalanadi
+    if (!cleanName) { client.release(); return res.status(400).json({ message: 'Taom nomi kerak' }); }
     const image_url = req.file ? `/uploads/menu/${req.file.filename}` : null;
     const itemType = type || 'recipe';
     const ingId = ingredient_id ? parseInt(ingredient_id) : null;
     const stationIds = parseStationIds(req.body);
     const primary = stationIds.length ? stationIds[0] : null;
+    const force = req.body.force === true || req.body.force === 'true'; // ataylab takror qo'shishga ruxsat
 
     await client.query('BEGIN');
+    // ETAP 5 DUBLIKAT-HIMOYA: shu nomli FAOL taom YOKI shu ingredientli product allaqachon bormi?
+    if (!force) {
+      const dup = await client.query(
+        `SELECT id, name FROM menu_items
+         WHERE is_active = true AND (lower(btrim(name)) = lower($1) OR ($2::int IS NOT NULL AND ingredient_id = $2))
+         LIMIT 1`, [cleanName, ingId]);
+      if (dup.rows.length) {
+        await client.query('ROLLBACK');
+        return res.status(409).json({
+          message: `Bunday taom allaqachon bor: "${dup.rows[0].name}" (#${dup.rows[0].id}). Mavjudini ishlating yoki takror qo'shishni tasdiqlang.`,
+          existing_id: dup.rows[0].id,
+        });
+      }
+    }
     const result = await client.query(
       `INSERT INTO menu_items (category_id, name, price, image_url, type, ingredient_id, station_id)
        VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
-      [category_id, name, price, image_url, itemType, ingId, primary]
+      [category_id, cleanName, price, image_url, itemType, ingId, primary]
     );
     const itemId = result.rows[0].id;
     for (const sid of stationIds) {
@@ -247,6 +264,7 @@ const updateMenuItem = async (req, res) => {
   try {
     const { id } = req.params;
     const { category_id, name, price, is_active } = req.body;
+    const cleanName = (name !== undefined && name !== null) ? name.toString().replace(/\s+/g, ' ').trim() : name; // ETAP 5 trim
     const image_url = req.file ? `/uploads/menu/${req.file.filename}` : null;
     const stationIds = parseStationIds(req.body);
     const primary = stationIds.length ? stationIds[0] : null;
@@ -260,11 +278,11 @@ const updateMenuItem = async (req, res) => {
     if (image_url) {
       query = `UPDATE menu_items SET category_id=$1, name=$2, price=$3, is_active=$4,
                station_id=${stationExpr}, image_url=$6 WHERE id=$7 RETURNING *`;
-      params = [category_id, name, price, is_active, primary, image_url, id];
+      params = [category_id, cleanName, price, is_active, primary, image_url, id];
     } else {
       query = `UPDATE menu_items SET category_id=$1, name=$2, price=$3, is_active=$4,
                station_id=${stationExpr} WHERE id=$6 RETURNING *`;
-      params = [category_id, name, price, is_active, primary, id];
+      params = [category_id, cleanName, price, is_active, primary, id];
     }
     const result = await client.query(query, params);
     // Bo'limlar berilgan bo'lsa — junction'ni qayta yozamiz
