@@ -12,6 +12,7 @@ const { getDailyReport, getStockReport, getAttendanceReport, getDashboard, getPa
         addSalaryFine, listSalaryFines, deleteSalaryFine,
         addSalaryBonus, listSalaryBonuses, deleteSalaryBonus,
         setLateFineOverride, deleteLateFineOverride,
+        setManualShifts, deleteManualShifts, getManualShifts,
         getCashbox, addCashTransaction, setOpeningBalance, deleteCashTransaction, payDebt,
         getReport, getAnalytics,
         getDishDetail, getPieceRates, setPieceRates } = require('../controllers/reportController');
@@ -40,6 +41,9 @@ router.post('/salary-bonuses', authMiddleware, adminOnly, addSalaryBonus);
 router.delete('/salary-bonuses/:id', authMiddleware, adminOnly, deleteSalaryBonus);
 router.post('/late-fine-override', authMiddleware, adminOnly, setLateFineOverride);
 router.delete('/late-fine-override', authMiddleware, adminOnly, deleteLateFineOverride);
+router.get('/manual-shifts', authMiddleware, adminOnly, getManualShifts);      // смещик qo'lда smenalari
+router.post('/manual-shifts', authMiddleware, adminOnly, setManualShifts);
+router.delete('/manual-shifts', authMiddleware, adminOnly, deleteManualShifts);
 
 // Kassa (admin + kassir)
 router.get('/cashbox', authMiddleware, adminOrCashier, getCashbox);

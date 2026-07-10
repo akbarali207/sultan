@@ -39,6 +39,7 @@ class AppConstants {
   static const String salaryFines = '/reports/salary-fines';
   static const String salaryBonuses = '/reports/salary-bonuses';
   static const String lateFineOverride = '/reports/late-fine-override';
+  static const String manualShifts = '/reports/manual-shifts';
   static const String cashbox = '/reports/cashbox';
   static const String debts = '/reports/debts';
   static const String stock = '/stock';

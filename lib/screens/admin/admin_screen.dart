@@ -8378,8 +8378,13 @@ class _PayrollSectionState extends State<PayrollSection> {
         final pb = double.tryParse(s['piece_base']?.toString() ?? '0') ?? 0;
         return '${tr('Dona uchun')}: ${_money(pb)}';
       case 'shift':
+        final ms = s['manual_shifts'];
+        if (ms != null) {
+          final n = double.tryParse(ms.toString()) ?? 0;
+          return '${tr('Stavka')}: ${_money(val)} × ${_fmtNum(n)} ${tr('smena')} (${tr('qo\'lda')})';
+        }
         final d = (s['days_worked'] as num?)?.toInt() ?? 0;
-        return '${tr('Stavka')}: ${_money(val)}  •  $d ${tr('smena')} (11:50=1, <=0.5, 12+ bonus)';
+        return '${tr('Stavka')}: ${_money(val)}  •  $d ${tr('smena')} (Face-ID)';
       case 'monthly':
         return tr('Belgilangan oylik');
       case 'daily':
@@ -8420,12 +8425,18 @@ class _PayrollSectionState extends State<PayrollSection> {
                     Text(tr('Ish haqi'),
                         style: TextStyle(color: AppTheme.text, fontSize: 18, fontWeight: FontWeight.bold)),
                     const Spacer(),
-                    if (staff.isNotEmpty)
+                    if (staff.isNotEmpty) ...[
+                      IconButton(
+                        icon: const Icon(Icons.table_view, color: Colors.green),
+                        tooltip: tr('Excel (CSV) eksport'),
+                        onPressed: _generateCsv,
+                      ),
                       IconButton(
                         icon: Icon(Icons.picture_as_pdf, color: AppTheme.accent),
                         tooltip: tr('PDF hisobot'),
                         onPressed: _generatePdf,
                       ),
+                    ],
                   ],
                 ),
                 const SizedBox(height: 8),
@@ -8603,11 +8614,75 @@ class _PayrollSectionState extends State<PayrollSection> {
     );
   }
 
+  // Kirillni qo'llaydigan shrift: avval Windows Arial (OFFLINE — internetsiz ishlaydi),
+  // bo'lmasa internetdan Noto Sans. Shunda POS'да internet bo'lmasa ham PDF chiqadi.
+  Future<pw.Font?> _pdfFont({required bool bold}) async {
+    final candidates = bold
+        ? [r'C:\Windows\Fonts\arialbd.ttf', r'C:\Windows\Fonts\arial.ttf']
+        : [r'C:\Windows\Fonts\arial.ttf'];
+    for (final path in candidates) {
+      try {
+        final f = File(path);
+        if (await f.exists()) return pw.Font.ttf((await f.readAsBytes()).buffer.asByteData());
+      } catch (_) {}
+    }
+    try {
+      return bold ? await PdfGoogleFonts.notoSansBold() : await PdfGoogleFonts.notoSansRegular();
+    } catch (_) {}
+    return null;
+  }
+
+  // Excel/CSV eksport — tahrirlash mumkin bo'lgan jadval (UTF-8 BOM + ';' -> Excel kirillни to'g'ri ochadi)
+  Future<void> _generateCsv() async {
+    final staff = (_data?['staff'] as List?) ?? [];
+    if (staff.isEmpty) return;
+    double n(dynamic v) => double.tryParse(v?.toString() ?? '0') ?? 0;
+    String num0(num v) => v.toStringAsFixed(0);
+    String esc(String v) => '"${v.replaceAll('"', '""')}"';
+    const sep = ';';
+    final rows = <String>[];
+    rows.add(['#', tr('Xodim'), tr('Rol'), tr('Maosh turi'), tr('Stavka/foiz'),
+      '${tr('Kun')} (Face-ID)', '${tr('Soat')} (Face-ID)', tr('Smena (qo\'lda)'),
+      tr('Hisoblangan'), tr('Jarima'), tr('Bonus'), tr('Avans'), tr('Oylik'), tr('Qoldiq')]
+        .map(esc).join(sep));
+    for (var i = 0; i < staff.length; i++) {
+      final s = staff[i] as Map<String, dynamic>;
+      final ms = s['manual_shifts'];
+      rows.add([
+        '${i + 1}',
+        s['full_name']?.toString() ?? '',
+        _roleLabel(s['role_name']?.toString() ?? ''),
+        _salaryTypeLabel(s['salary_type']?.toString() ?? ''),
+        _fmtNum(n(s['salary_value'])),
+        '${(s['days_worked'] as num?)?.toInt() ?? 0}',
+        _fmtNum(n(s['hours_worked'])),
+        ms == null ? '' : _fmtNum(n(ms)),
+        num0(n(s['base_salary'])),
+        num0(n(s['total_fine']) + n(s['manual_fine'])),
+        num0(n(s['bonus'])),
+        num0(n(s['advance'])),
+        num0(n(s['salary_paid'])),
+        num0(n(s['remaining'])),
+      ].map((v) => esc(v.toString())).join(sep));
+    }
+    final csv = '﻿${rows.join('\r\n')}';
+    final dir = await getApplicationDocumentsDirectory();
+    final fileName = 'ish_haqi_${_month.year}_${_month.month.toString().padLeft(2, '0')}.csv';
+    final filePath = '${dir.path}/$fileName';
+    await File(filePath).writeAsString(csv);
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text('${tr('Excel (CSV) saqlandi')}: $filePath'),
+        backgroundColor: Colors.green, duration: const Duration(seconds: 4)));
+    }
+    await OpenFilex.open(filePath);
+  }
+
   Future<void> _generatePdf() async {
     final staff = (_data?['staff'] as List?) ?? [];
     if (staff.isEmpty) return;
-    final font = await PdfGoogleFonts.notoSansRegular();
-    final fontBold = await PdfGoogleFonts.notoSansBold();
+    final font = await _pdfFont(bold: false);
+    final fontBold = await _pdfFont(bold: true);
     double n(dynamic v) => double.tryParse(v?.toString() ?? '0') ?? 0;
     final totalBase = n(_data?['total_base']);
     final totalFine = n(_data?['total_fine']);
@@ -8875,6 +8950,73 @@ class _PayslipDialogState extends State<_PayslipDialog> {
 
   double get _bonusTotal =>
       _bonuses.fold(0.0, (sum, a) => sum + (double.tryParse(a['amount']?.toString() ?? '0') ?? 0));
+
+  // Смена (qo'lда) — oy bo'yicha nechta smena ishlaganini kiritish. Bo'sh -> Face-ID bo'yicha.
+  Future<void> _editManualShifts() async {
+    final s = _staffOverride ?? widget.staff;
+    final ym = widget.fromYmd.length >= 7 ? widget.fromYmd.substring(0, 7) : '';
+    if (ym.isEmpty) return;
+    final hasManual = s['manual_shifts'] != null;
+    final ctrl = TextEditingController(
+        text: hasManual ? widget.fmtNum(double.tryParse(s['manual_shifts'].toString()) ?? 0) : '');
+    final res = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppTheme.card,
+        title: Text(tr('Smena (qo\'lda)'), style: TextStyle(color: AppTheme.text)),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(tr('Necha smena ishlagan? (masalan 26 yoki 25.5). Bo\'sh qoldirsangiz — Face-ID bo\'yicha hisoblanadi.'),
+                style: TextStyle(color: AppTheme.textSoft, fontSize: 12)),
+            const SizedBox(height: 10),
+            TextField(
+              controller: ctrl,
+              autofocus: true,
+              keyboardType: const TextInputType.numberWithOptions(decimal: true),
+              onTap: () => ctrl.selection = TextSelection(baseOffset: 0, extentOffset: ctrl.text.length),
+              style: TextStyle(color: AppTheme.text),
+              decoration: InputDecoration(
+                labelText: tr('Smenalar soni'),
+                labelStyle: TextStyle(color: AppTheme.textSoft),
+                enabledBorder: OutlineInputBorder(borderSide: BorderSide(color: AppTheme.border)),
+                focusedBorder: OutlineInputBorder(borderSide: BorderSide(color: AppTheme.accent)),
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          if (hasManual)
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, '__clear__'),
+              child: Text(tr('Face-ID ga qaytarish'), style: const TextStyle(color: Colors.orange)),
+            ),
+          TextButton(onPressed: () => Navigator.pop(ctx),
+              child: Text(tr('Bekor'), style: TextStyle(color: AppTheme.textSoft))),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(backgroundColor: AppTheme.accent),
+            onPressed: () => Navigator.pop(ctx, ctrl.text.trim().replaceAll(',', '.')),
+            child: Text(tr('Saqlash'), style: TextStyle(color: AppTheme.onAccent)),
+          ),
+        ],
+      ),
+    );
+    if (res == null) return;
+    try {
+      if (res == '__clear__') {
+        await ApiService.delete('${AppConstants.manualShifts}?user_id=$_userId&period_ym=$ym');
+      } else {
+        await ApiService.post(AppConstants.manualShifts,
+            {'user_id': _userId, 'period_ym': ym, 'shifts': double.tryParse(res) ?? 0});
+      }
+      await _refreshStaff();
+      widget.onChanged();
+    } catch (e) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('${tr('Xato')}: $e'), backgroundColor: Colors.red));
+    }
+  }
 
   Future<void> _addBonus() async {
     final valCtrl = TextEditingController();
@@ -9196,6 +9338,7 @@ class _PayslipDialogState extends State<_PayslipDialog> {
     final orders = (s['orders_count'] as num?)?.toInt() ?? 0;
     final days = (s['days_worked'] as num?)?.toInt() ?? 0;
     final hours = double.tryParse(s['hours_worked']?.toString() ?? '0') ?? 0;
+    final double? manualShifts = s['manual_shifts'] == null ? null : (double.tryParse(s['manual_shifts'].toString()));
     final remaining = net + _bonusTotal - _finesTotal - _paidTotal;
     final salarySettled = s['salary_settled'] == true;
     final canPaySalary = s['can_pay_salary'] == true;
@@ -9247,8 +9390,36 @@ class _PayslipDialogState extends State<_PayslipDialog> {
                 kv(tr('Jami tushum'), '${widget.money(allSales)} ${tr('so\'m')}'),
                 kv(tr('Foiz'), '${widget.fmtNum(val)}%'),
               ],
-              kv(tr('Ishlagan kun'), '$days'),
-              kv(tr('Ishlagan soat'), widget.fmtNum(hours)),
+              kv('${tr('Ishlagan kun')} (Face-ID)', '$days'),
+              kv('${tr('Ishlagan soat')} (Face-ID)', widget.fmtNum(hours)),
+              // SMENA (shift): qo'lда smena kiritish — Face-ID ishonchsiz bo'lса ustun ishlatiladi
+              if (type == 'shift')
+                InkWell(
+                  onTap: _editManualShifts,
+                  borderRadius: BorderRadius.circular(6),
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 3),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Row(mainAxisSize: MainAxisSize.min, children: [
+                          Text(tr('Smena (qo\'lda)'), style: TextStyle(color: AppTheme.textSoft, fontSize: 13)),
+                          const SizedBox(width: 4),
+                          Icon(Icons.edit, size: 13, color: AppTheme.accent),
+                        ]),
+                        const SizedBox(width: 8),
+                        Text(
+                          manualShifts != null
+                              ? '${widget.fmtNum(manualShifts)} × ${widget.money(val)}'
+                              : tr('Face-ID bo\'yicha'),
+                          style: TextStyle(
+                              color: manualShifts != null ? AppTheme.accent : AppTheme.textSoft,
+                              fontSize: 13, fontWeight: FontWeight.w600),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
               Divider(color: AppTheme.border, height: 16),
               kv(tr('Hisoblangan'), '${widget.money(base)} ${tr('so\'m')}'),
               if (autoFine > 0 || fineOverridden)

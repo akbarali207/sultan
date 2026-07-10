@@ -474,7 +474,7 @@ const getPayroll = async (req, res) => {
     const toInclS = r.rows[0].to_incl_s;
 
     const periodYm = fromS.substring(0, 7); // '2026-06'
-    const [emp, sales, att, adv, lastSal, fines, bonuses, overrides, pieceAgg, dailySales] = await Promise.all([
+    const [emp, sales, att, adv, lastSal, fines, bonuses, overrides, pieceAgg, dailySales, manualShiftsRows] = await Promise.all([
       pool.query(
         `SELECT u.id, u.full_name, r.name AS role_name,
                 u.salary_type, COALESCE(u.salary_value, 0) AS salary_value,
@@ -567,6 +567,11 @@ const getPayroll = async (req, res) => {
          GROUP BY waiter_id, (created_at - INTERVAL '150 minutes')::date`,
         [fromS, toExclS]
       ),
+      // Смещиклар uchun QO'LDA kiritilgan smenalar (shu oy) — Face-ID o'rniga ustun
+      pool.query(
+        `SELECT user_id, shifts, note FROM manual_shifts WHERE period_ym = $1`,
+        [periodYm]
+      ),
     ]);
 
     // Oxirgi oylik xaritasi (global)
@@ -603,6 +608,10 @@ const getPayroll = async (req, res) => {
     for (const r of dailySales.rows) {
       (dailySalesMap[r.waiter_id] = dailySalesMap[r.waiter_id] || []).push(parseFloat(r.day_sales) || 0);
     }
+
+    // QO'LDA smenalar: user_id -> {shifts, note}. Yozuv bo'lsa (0 bo'lsa ham) Face-ID o'rniga shu ishlatiladi.
+    const manualShiftMap = {};
+    for (const m of manualShiftsRows.rows) manualShiftMap[m.user_id] = { shifts: parseFloat(m.shifts) || 0, note: m.note };
 
     // To'lovlar xaritasi (avans + oylik)
     const payMap = {};
@@ -661,14 +670,19 @@ const getPayroll = async (req, res) => {
         case 'percent_total': base = totalSales * sv / 100; break; // kassir: jami tushumdan foiz
         case 'piece':   base = pieceMap[u.id] || 0; break;         // sdelnaya: dona-stavka yig'indisi
         case 'shift': {
-          // STAVKA (smena) — HAR KUN alohida. sv = 1 to'liq smena stavkasi.
-          //  kun >= 11:50 (710 daq) -> 1 stavka;  agar > 12:00 (720 daq) -> + (ortiqcha daq × stavka/720) bonus;
-          //  kun < 11:50 -> 0.5 stavka (kam ishlagan). Bonus base ichida -> oylik tarixiga kiradi.
-          base = (e.hoursList || []).reduce((acc2, h) => {
-            const m = (h || 0) * 60;
-            if (m >= 710) return acc2 + (m > 720 ? sv + (m - 720) * (sv / 720) : sv);
-            return acc2 + sv * 0.5;
-          }, 0);
+          // STAVKA (smena). sv = bir to'liq smena stavkasi (masalan 3400 so'm; 1 smena = 12 soat).
+          // (1) QO'LDA smena kiritilgan bo'lsa -> base = smena_soni × stavka (Face-ID o'rniga; ishonchli).
+          // (2) Aks holda Face-ID davomatдан: kun>=11:50(710daq)->1 smena; >12:00->+ortiqcha daq bonus; <11:50->0.5.
+          const ms = manualShiftMap[u.id];
+          if (ms) {
+            base = ms.shifts * sv;
+          } else {
+            base = (e.hoursList || []).reduce((acc2, h) => {
+              const m = (h || 0) * 60;
+              if (m >= 710) return acc2 + (m > 720 ? sv + (m - 720) * (sv / 720) : sv);
+              return acc2 + sv * 0.5;
+            }, 0);
+          }
           break;
         }
         case 'monthly': base = sv; break;
@@ -708,8 +722,9 @@ const getPayroll = async (req, res) => {
         total_sales: sm.sales,
         total_all_sales: totalSales,
         orders_count: sm.orders,
-        days_worked: e.days,
-        hours_worked: hours,
+        days_worked: e.days,      // Face-ID: davomatдан kun soni (sverka uchun)
+        hours_worked: hours,      // Face-ID: davomatдан jami soat
+        manual_shifts: manualShiftMap[u.id] ? manualShiftMap[u.id].shifts : null, // qo'lда kiritilgan smena (null=yo'q)
         base_salary: base,
         total_fine: fine,
         auto_fine: autoFine,
@@ -997,6 +1012,59 @@ const deleteLateFineOverride = async (req, res) => {
       await pool.query('DELETE FROM late_fine_overrides WHERE id = $1', [req.params.id]);
     }
     res.json({ message: 'deleted' });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+};
+
+// QO'LDA smena (смещик) — oy bo'yicha nechta smena ishlaganini kiritish/yangilash (upsert).
+// getPayroll shift-hisobi shu yozuvni Face-ID o'rniga ustun ishlatadi (Face-ID ishonchsiz bo'lganда).
+const setManualShifts = async (req, res) => {
+  try {
+    const { user_id, period_ym, shifts, note } = req.body;
+    if (!user_id || !/^\d{4}-\d{2}$/.test((period_ym || '').toString())) {
+      return res.status(400).json({ message: 'user_id va period_ym (YYYY-MM) kerak' });
+    }
+    const sh = Math.max(0, parseFloat(shifts) || 0);
+    const r = await pool.query(
+      `INSERT INTO manual_shifts (user_id, period_ym, shifts, note)
+       VALUES ($1, $2, $3, $4)
+       ON CONFLICT (user_id, period_ym)
+       DO UPDATE SET shifts = EXCLUDED.shifts, note = EXCLUDED.note, updated_at = NOW()
+       RETURNING id, user_id, period_ym, shifts, note`,
+      [user_id, period_ym, sh, (note || '').toString().trim().slice(0, 200) || null]
+    );
+    res.status(201).json(r.rows[0]);
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+};
+
+// QO'LDA smenani olib tashlash (yana Face-ID bo'yicha hisoblanadi)
+const deleteManualShifts = async (req, res) => {
+  try {
+    const { user_id, period_ym } = req.query;
+    if (user_id && /^\d{4}-\d{2}$/.test((period_ym || '').toString())) {
+      await pool.query('DELETE FROM manual_shifts WHERE user_id = $1 AND period_ym = $2', [user_id, period_ym]);
+    } else {
+      await pool.query('DELETE FROM manual_shifts WHERE id = $1', [req.params.id]);
+    }
+    res.json({ message: 'deleted' });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+};
+
+// QO'LDA smenalar ro'yxati — ?period_ym=YYYY-MM [&user_id=]
+const getManualShifts = async (req, res) => {
+  try {
+    const { period_ym, user_id } = req.query;
+    const conds = [], params = [];
+    if (period_ym) { params.push(period_ym); conds.push(`period_ym = $${params.length}`); }
+    if (user_id) { params.push(user_id); conds.push(`user_id = $${params.length}`); }
+    const where = conds.length ? 'WHERE ' + conds.join(' AND ') : '';
+    const r = await pool.query(`SELECT user_id, period_ym, shifts, note FROM manual_shifts ${where}`, params);
+    res.json(r.rows);
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
@@ -1473,6 +1541,7 @@ module.exports = {
   addSalaryFine, listSalaryFines, deleteSalaryFine,
   addSalaryBonus, listSalaryBonuses, deleteSalaryBonus,
   setLateFineOverride, deleteLateFineOverride,
+  setManualShifts, deleteManualShifts, getManualShifts,
   getCashbox, addCashTransaction, setOpeningBalance, deleteCashTransaction, payDebt,
   getReport, getAnalytics,
   getDishDetail, getPieceRates, setPieceRates,
