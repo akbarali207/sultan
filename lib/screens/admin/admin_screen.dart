@@ -2318,6 +2318,17 @@ class _MenuSectionState extends State<MenuSection> with SingleTickerProviderStat
     return wh != null ? (wh['name']?.toString() ?? '') : '';
   }
 
+  // Sklad kategoriyalari (ETAP 3.1): qattiq ro'yxat + mavjud ma'lumotdagi BARCHA kategoriyalar.
+  // Data-driven — yangi kategoriyalar avtomatik chiqadi; qattiq 5 doim bor (fallback kafolati).
+  List<String> get _stockCategoryList {
+    final set = <String>{'Продукция', 'Десерт', 'Холодные напитки', 'Ингредиенты', 'П/Ф'};
+    for (final i in _ingredients) {
+      final c = (i['category'] as String?)?.trim();
+      if (c != null && c.isNotEmpty) set.add(c);
+    }
+    return set.toList();
+  }
+
   void _showAddIngredientDialog() {
     final nameController = TextEditingController();
     final quantityController = TextEditingController();
@@ -2327,7 +2338,7 @@ class _MenuSectionState extends State<MenuSection> with SingleTickerProviderStat
     String selectedUnit = 'kg';
     String selectedCategory = 'Ингредиенты';
     final units = ['kg', 'g', 'litr', 'ml', 'dona', 'pachka'];
-    const stockCategories = ['Продукция', 'Десерт', 'Холодные напитки', 'Ингредиенты', 'П/Ф'];
+    final stockCategories = _stockCategoryList; // data-driven (qattiq 5 + mavjud kategoriyalar)
 
     showDialog(
       context: context,
