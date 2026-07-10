@@ -577,8 +577,7 @@ class _RecipeEditorPageState extends State<RecipeEditorPage> {
                         const SizedBox(width: 34),
                       ]),
                     ),
-                    // KONVENSIYA (per-unit): retsept 1 kg chiqishga kiritiladi -> tannarx/кг = jami tannarx
-                    // TO'G'RIDAN-TO'G'RI (yield_kg ga bo'linmaydi; syncPfCost bilan mos). "Chiqish" — faqat ma'lumot.
+                    // BATCH: retsept = partiya -> tannarx/кг = jami tannarx ÷ CHIQISH (yield). syncPfCost bilan mos.
                     if (batchKg != null && batchKg > 0)
                       InkWell(
                         onTap: _editYield,
@@ -594,7 +593,7 @@ class _RecipeEditorPageState extends State<RecipeEditorPage> {
                             ),
                             Icon(Icons.edit, size: 15, color: AppTheme.textSoft),
                             const SizedBox(width: 8),
-                            Text('${totC.toStringAsFixed(0)} ${tr('so\'m')}/кг',
+                            Text('${(totC / batchKg).toStringAsFixed(0)} ${tr('so\'m')}/кг',
                                 style: TextStyle(color: AppTheme.accent, fontWeight: FontWeight.bold, fontSize: 13)),
                           ]),
                         ),

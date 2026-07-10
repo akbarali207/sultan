@@ -3262,71 +3262,123 @@ class _MenuSectionState extends State<MenuSection> with SingleTickerProviderStat
   // P/F qoldig'i +N, retseptidagi xom masaliqlar -N*brutto (backend hisoblaydi)
   void _showProducePfDialog(Map<String, dynamic> ing) {
     final qtyC = TextEditingController();
+    final priceC = TextEditingController();
+    String mode = 'produced'; // 'produced' (tayyorladik) | 'bought' (sotib oldik)
     showDialog(
       context: context,
-      builder: (context) => AlertDialog(
-        backgroundColor: AppTheme.card,
-        title: Text('${ing['name']} — ${tr('Tayyorlash')}',
-            style: TextStyle(color: AppTheme.text, fontSize: 16)),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Text(tr('Qancha tayyorlandi? Xom masaliqlar retsept bo\'yicha skladdan ayriladi.'),
-                style: TextStyle(color: AppTheme.textSoft, fontSize: 12)),
-            const SizedBox(height: 10),
-            TextField(
-              controller: qtyC,
-              autofocus: true,
-              keyboardType: TextInputType.numberWithOptions(decimal: true),
-              style: TextStyle(color: AppTheme.text),
-              decoration: InputDecoration(
-                labelText: '${tr('Miqdori')} (${ing['unit']})',
-                labelStyle: TextStyle(color: AppTheme.textSoft),
-                enabledBorder: OutlineInputBorder(borderSide: BorderSide(color: AppTheme.border)),
-                focusedBorder: const OutlineInputBorder(borderSide: BorderSide(color: Colors.purple)),
+      builder: (context) => StatefulBuilder(
+        builder: (context, setSt) => AlertDialog(
+          backgroundColor: AppTheme.card,
+          title: Text('${ing['name']} — ${tr('Tayyorlash')}',
+              style: TextStyle(color: AppTheme.text, fontSize: 16)),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              // Rejim: Tayyorladik / Sotib oldik
+              Row(children: [
+                Expanded(child: _pfModeBtn(tr('Tayyorladik'), mode == 'produced', () => setSt(() => mode = 'produced'))),
+                const SizedBox(width: 8),
+                Expanded(child: _pfModeBtn(tr('Sotib oldik'), mode == 'bought', () => setSt(() => mode = 'bought'))),
+              ]),
+              const SizedBox(height: 12),
+              Text(
+                  mode == 'produced'
+                      ? tr('Xom masaliqlar retsept (chiqish) bo\'yicha skladdan ayriladi.')
+                      : tr('Tayyor sotib olindi — narx/kg va vazn kiriting (Kassadan chiqim).'),
+                  style: TextStyle(color: AppTheme.textSoft, fontSize: 12)),
+              const SizedBox(height: 10),
+              TextField(
+                controller: qtyC,
+                autofocus: true,
+                keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                inputFormatters: decimalFormatters,
+                style: TextStyle(color: AppTheme.text),
+                decoration: InputDecoration(
+                  labelText: '${tr('Miqdori')} (${ing['unit']})',
+                  labelStyle: TextStyle(color: AppTheme.textSoft),
+                  enabledBorder: OutlineInputBorder(borderSide: BorderSide(color: AppTheme.border)),
+                  focusedBorder: const OutlineInputBorder(borderSide: BorderSide(color: Colors.purple)),
+                ),
               ),
+              if (mode == 'bought') ...[
+                const SizedBox(height: 10),
+                TextField(
+                  controller: priceC,
+                  keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                  inputFormatters: decimalFormatters,
+                  style: TextStyle(color: AppTheme.text),
+                  decoration: InputDecoration(
+                    labelText: tr('Narx (1 kg / birlik uchun)'),
+                    labelStyle: TextStyle(color: AppTheme.textSoft),
+                    enabledBorder: OutlineInputBorder(borderSide: BorderSide(color: AppTheme.border)),
+                    focusedBorder: const OutlineInputBorder(borderSide: BorderSide(color: Colors.purple)),
+                  ),
+                ),
+              ],
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: Text(tr('Bekor'), style: TextStyle(color: AppTheme.textSoft)),
+            ),
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(backgroundColor: Colors.purple),
+              onPressed: () async {
+                final qty = double.tryParse(qtyC.text.trim().replaceAll(',', '.')) ?? 0;
+                if (qty <= 0) return;
+                final body = <String, dynamic>{'ingredient_id': ing['id'], 'quantity': qty, 'mode': mode};
+                if (mode == 'bought') {
+                  final pr = double.tryParse(priceC.text.trim().replaceAll(',', '.')) ?? -1;
+                  if (pr < 0) return;
+                  body['price_per_kg'] = pr;
+                }
+                final nav = Navigator.of(context);
+                final messenger = ScaffoldMessenger.of(context);
+                try {
+                  final res = await ApiService.post('${AppConstants.stock}/produce', body,
+                      idempotencyKey: ApiService.newIdempotencyKey());
+                  nav.pop();
+                  if (res is Map && res['ok'] == true) {
+                    messenger.showSnackBar(SnackBar(
+                        content: Text('${ing['name']}: +$qty ${ing['unit']}'),
+                        backgroundColor: Colors.green));
+                    _loadData();
+                  } else {
+                    messenger.showSnackBar(SnackBar(
+                        content: Text((res is Map ? res['message'] : null)?.toString() ?? tr('Xato')),
+                        backgroundColor: Colors.red));
+                  }
+                } catch (e) {
+                  messenger.showSnackBar(
+                      SnackBar(content: Text('${tr('Xato')}: $e'), backgroundColor: Colors.red));
+                }
+              },
+              child: Text(mode == 'bought' ? tr('Sotib oldik') : tr('Tayyorlash'),
+                  style: const TextStyle(color: Colors.white)),
             ),
           ],
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: Text(tr('Bekor'), style: TextStyle(color: AppTheme.textSoft)),
-          ),
-          ElevatedButton(
-            style: ElevatedButton.styleFrom(backgroundColor: Colors.purple),
-            onPressed: () async {
-              final qty = double.tryParse(qtyC.text.trim().replaceAll(',', '.')) ?? 0;
-              if (qty <= 0) return;
-              final nav = Navigator.of(context);
-              final messenger = ScaffoldMessenger.of(context);
-              try {
-                final res = await ApiService.post('${AppConstants.stock}/produce', {
-                  'ingredient_id': ing['id'],
-                  'quantity': qty,
-                }, idempotencyKey: ApiService.newIdempotencyKey());
-                nav.pop();
-                if (res is Map && res['ok'] == true) {
-                  messenger.showSnackBar(SnackBar(
-                      content: Text('${ing['name']}: +$qty ${ing['unit']}'),
-                      backgroundColor: Colors.green));
-                  _loadData();
-                } else {
-                  messenger.showSnackBar(SnackBar(
-                      content: Text((res is Map ? res['message'] : null)?.toString() ?? tr('Xato')),
-                      backgroundColor: Colors.red));
-                }
-              } catch (e) {
-                messenger.showSnackBar(
-                    SnackBar(content: Text('${tr('Xato')}: $e'), backgroundColor: Colors.red));
-              }
-            },
-            child: Text(tr('Tayyorlash'), style: const TextStyle(color: Colors.white)),
-          ),
-        ],
       ),
     );
   }
+
+  Widget _pfModeBtn(String label, bool sel, VoidCallback onTap) => InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(10),
+        child: Container(
+          padding: const EdgeInsets.symmetric(vertical: 10),
+          alignment: Alignment.center,
+          decoration: BoxDecoration(
+            color: sel ? Colors.purple : AppTheme.bg,
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(color: sel ? Colors.purple : AppTheme.border),
+          ),
+          child: Text(label,
+              style: TextStyle(color: sel ? Colors.white : AppTheme.text, fontWeight: FontWeight.w600, fontSize: 13)),
+        ),
+      );
 
   // Sklad mahsulotini TAHRIRLASH — sabab majburiy, tarixga yoziladi
   void _showEditIngredientDialog(Map<String, dynamic> ing) {

@@ -229,53 +229,81 @@ const editIngredient = async (req, res) => {
   }
 };
 
-// P/F TAYYORLASH (ishlab chiqarish): oshpaz "N birlik tayyorladim" deydi ->
-// P/F qoldig'i +N, retseptidagi xom masaliqlar -N*brutto (Kassaga tegilmaydi).
-// body: { ingredient_id (P/F sklad masaligi), quantity }
+// P/F TAYYORLASH yoki SOTIB OLISH (ishlab chiqarish).
+// body: { ingredient_id, quantity, mode: 'produced'|'bought', price_per_kg?, from_kassa? }
+//  mode='produced' (default): retsept komponentlari BATCH bo'yicha chegiriladi (qty/chiqish partiya),
+//     P/F qoldig'i +qty, tannarx o'z retseptidan (syncPfCost). Kassaga TEGILMAYDI (ichki ishlab chiqarish).
+//  mode='bought': tayyor sotib olindi -> narx/kg + vazn. Komponent chegirilmaydi; P/F +qty, narx = price_per_kg.
+//     Kassaga CHIQIM (from_kassa != false bo'lsa) — bu haqiqiy xarid.
 const producePf = async (req, res) => {
   const client = await pool.connect();
   try {
     const ingId = parseInt(req.body.ingredient_id);
     const qty = parseFloat(req.body.quantity);
+    const mode = req.body.mode === 'bought' ? 'bought' : 'produced';
     if (isNaN(ingId) || !(qty > 0)) {
       return res.status(400).json({ message: 'ingredient_id va musbat quantity kerak' });
     }
     await client.query('BEGIN');
     const mi = await client.query(
-      `SELECT id FROM menu_items WHERE type = 'pf' AND ingredient_id = $1 AND is_active = true LIMIT 1`,
+      `SELECT id, yield_kg FROM menu_items WHERE type = 'pf' AND ingredient_id = $1 AND is_active = true LIMIT 1`,
       [ingId]
     );
     if (!mi.rows.length) {
       await client.query('ROLLBACK');
-      return res.status(404).json({ message: 'Bu masaliq P/F emas (retsepti yo\'q)' });
+      return res.status(404).json({ message: 'Bu masaliq P/F emas' });
     }
+    const yieldKg = parseFloat(mi.rows[0].yield_kg) || 0;
+
+    if (mode === 'bought') {
+      // SOTIB OLINDI: narx/kg + vazn. Komponent chegirilmaydi. P/F +qty, narx yangilanadi.
+      const pricePerKg = parseFloat(req.body.price_per_kg);
+      if (!(pricePerKg >= 0)) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ message: 'Sotib olishda kg narxi (price_per_kg) kerak' });
+      }
+      await client.query(
+        `UPDATE ingredients SET stock_quantity = stock_quantity + $1, price_per_unit = $2 WHERE id = $3`,
+        [qty, pricePerKg, ingId]);
+      const total = qty * pricePerKg;
+      const fromKassa = req.body.from_kassa !== false && req.body.from_kassa !== 'false';
+      const inc = await client.query(
+        `INSERT INTO stock_incoming (ingredient_id, quantity, price_per_unit, total_amount, note, method, source)
+         VALUES ($1, $2, $3, $4, 'P/F sotib olindi', 'cash', $5) RETURNING id`,
+        [ingId, qty, pricePerKg, total, fromKassa ? 'kassa' : 'boshqa']);
+      if (fromKassa && total > 0) {
+        await client.query(
+          `INSERT INTO cash_transactions (kind, method, amount, source, ref_id, note)
+           VALUES ('expense', 'cash', $1, 'stock', $2, 'P/F sotib olindi')`,
+          [total, inc.rows[0].id]);
+      }
+      await client.query('COMMIT');
+      return res.json({ ok: true, produced: qty, mode: 'bought' });
+    }
+
+    // TAYYORLANDI: retsept komponentlarini BATCH bo'yicha chegiramiz.
     const rec = await client.query(
-      `SELECT ingredient_id, quantity FROM recipe_items WHERE menu_item_id = $1`,
-      [mi.rows[0].id]
-    );
+      `SELECT ingredient_id, quantity FROM recipe_items WHERE menu_item_id = $1`, [mi.rows[0].id]);
     if (!rec.rows.length) {
       await client.query('ROLLBACK');
       return res.status(400).json({ message: 'P/F retsepti bo\'sh — avval retseptini kiriting' });
     }
-    // P/F +N
+    // Nechta PARTIYA tayyorlandi: chiqish (yield) berilgan bo'lsa qty/yield; aks holda qty (per-birlik).
+    const batches = yieldKg > 0 ? (qty / yieldKg) : qty;
     await client.query(`UPDATE ingredients SET stock_quantity = stock_quantity + $1 WHERE id = $2`, [qty, ingId]);
-    // Komponentlar -N*brutto
     for (const r of rec.rows) {
       await client.query(
         `UPDATE ingredients SET stock_quantity = stock_quantity - $1 WHERE id = $2`,
-        [qty * parseFloat(r.quantity), r.ingredient_id]
-      );
+        [batches * parseFloat(r.quantity), r.ingredient_id]);
     }
-    // Tarix (kirim jurnalida ko'rinadi, kassaga YOZILMAYDI)
     const c = await client.query(`SELECT COALESCE(price_per_unit,0) AS p FROM ingredients WHERE id = $1`, [ingId]);
     const unitCost = parseFloat(c.rows[0].p) || 0;
     await client.query(
       `INSERT INTO stock_incoming (ingredient_id, quantity, price_per_unit, total_amount, note, method, source)
        VALUES ($1, $2, $3, $4, 'P/F tayyorlash', 'cash', 'pf_production')`,
-      [ingId, qty, unitCost, qty * unitCost]
-    );
+      [ingId, qty, unitCost, qty * unitCost]);
     await client.query('COMMIT');
-    res.json({ ok: true, produced: qty });
+    res.json({ ok: true, produced: qty, mode: 'produced' });
   } catch (err) {
     await client.query('ROLLBACK');
     res.status(500).json({ message: err.message });

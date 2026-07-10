@@ -169,10 +169,11 @@ const syncPfCost = async (menuItemId) => {
     [menuItemId]
   );
   const cost = parseFloat(c.rows[0].cost) || 0;
-  // KONVENSIYA (ega tasdiqladi 2026-07-09): P/F retsept miqdorlari 1 KG CHIQISHGA kiritiladi (per-unit) —
-  // xuddi producePf skladdan qanday ayirsa (qty·brutto). Demak narx/кг = komponentlar yig'indisi
-  // TO'G'RIDAN-TO'G'RI; yield_kg ga BO'LINMAYDI (bo'linish tannarxni 5–7 barobar buzardi). yield_kg endi rudiment.
-  const price = cost;
+  const y = parseFloat(mi.rows[0].yield_kg);
+  // BATCH MODEL (ega qayta belgiladi 2026-07-09): P/F tannarx/kg = retsept JAMI tannarx ÷ CHIQISH (rashod/yield_kg).
+  // Masalan 0.3kg + 0.4kg komponent -> jami tannarx; chiqish 0.7kg bo'lsa -> tannarx/kg = jami/0.7.
+  // Chiqish (yield_kg) BERILISHI SHART; berilmasa jami tannarx (per-birlik) sifatida qoladi.
+  const price = (y && y > 0) ? (cost / y) : cost;
   await pool.query(`UPDATE ingredients SET price_per_unit = $1 WHERE id = $2`,
     [price, mi.rows[0].ingredient_id]);
 };
