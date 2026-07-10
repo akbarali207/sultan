@@ -313,28 +313,32 @@ const deleteMenuItem = async (req, res) => {
   try {
     const { id } = req.params;
     await client.query('BEGIN');
+    // Menyu<->sklad sync: product/pf bo'lsa bog'langan ingredientni ham arxivlaymiz (so'rov #3)
+    const info = await client.query('SELECT type, ingredient_id FROM menu_items WHERE id = $1', [id]);
+    const mType = info.rows[0] && info.rows[0].type;
+    const mIng = info.rows[0] && info.rows[0].ingredient_id;
+    const archiveLinkedIngredient = async () => {
+      if (!mIng || !(mType === 'product' || mType === 'pf')) return;
+      // faqat boshqa hech narsa ishlatmasa (retsept yoki boshqa FAOL menyu)
+      await client.query(
+        `UPDATE ingredients SET is_active = false WHERE id = $1
+           AND NOT EXISTS (SELECT 1 FROM recipe_items WHERE ingredient_id = $1)
+           AND NOT EXISTS (SELECT 1 FROM menu_items WHERE ingredient_id = $1 AND is_active = true AND id <> $2)`,
+        [mIng, id]);
+    };
     const used = await client.query('SELECT 1 FROM order_items WHERE menu_item_id = $1 LIMIT 1', [id]);
     if (used.rows.length) {
       await client.query('UPDATE menu_items SET is_active = false WHERE id = $1', [id]);
+      await archiveLinkedIngredient();
       await client.query('COMMIT');
-      return res.json({ message: 'Taom yashirildi (zakaz tarixi bor)', removed: false });
+      return res.json({ message: 'Taom yashirildi + bog\'langan sklad mahsuloti arxivlandi (zakaz tarixi bor)', removed: false });
     }
-    // P/F bo'lsa — bog'langan masaliq (ingredient) yetim qolmasin (agar boshqa hech nima ishlatmasa)
-    const info = await client.query('SELECT type, ingredient_id FROM menu_items WHERE id = $1', [id]);
     await client.query('DELETE FROM recipe_items WHERE menu_item_id = $1', [id]);
     await client.query('DELETE FROM menu_item_stations WHERE menu_item_id = $1', [id]);
     await client.query('DELETE FROM menu_items WHERE id = $1', [id]);
-    if (info.rows.length && info.rows[0].type === 'pf' && info.rows[0].ingredient_id) {
-      const ingId = info.rows[0].ingredient_id;
-      await client.query(
-        `DELETE FROM ingredients WHERE id = $1
-           AND NOT EXISTS (SELECT 1 FROM recipe_items WHERE ingredient_id = $1)
-           AND NOT EXISTS (SELECT 1 FROM menu_items WHERE ingredient_id = $1)`,
-        [ingId]
-      );
-    }
+    await archiveLinkedIngredient(); // qolgan ingredient yetim qolsa -> arxiv (hard-delete FK-xavfli)
     await client.query('COMMIT');
-    res.json({ message: 'Taom butunlay o\'chirildi', removed: true });
+    res.json({ message: 'Taom o\'chirildi (bog\'langan sklad mahsuloti ham arxivlandi)', removed: true });
   } catch (err) {
     await client.query('ROLLBACK');
     res.status(500).json({ message: err.message });
