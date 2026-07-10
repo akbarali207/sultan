@@ -19,7 +19,11 @@ const {
   createWarehouse,
   updateWarehouse,
   deleteWarehouse,
-  assignFromRecipe
+  assignFromRecipe,
+  getIngredientCategories,
+  createIngredientCategory,
+  updateIngredientCategory,
+  deleteIngredientCategory
 } = require('../controllers/stockController');
 
 // Skladlar (warehouses) — generik /:id dan oldin turishi shart
@@ -28,6 +32,12 @@ router.post('/warehouses', authMiddleware, adminOnly, createWarehouse);
 router.put('/warehouses/:id', authMiddleware, adminOnly, updateWarehouse);
 router.delete('/warehouses/:id', authMiddleware, adminOnly, deleteWarehouse);
 router.post('/assign-from-recipe', authMiddleware, adminOnly, assignFromRecipe);
+
+// Ingredient kategoriyalar (ETAP 3.1) — generik /:id dan oldin
+router.get('/ingredient-categories', authMiddleware, adminOnly, getIngredientCategories);
+router.post('/ingredient-categories', authMiddleware, adminOnly, createIngredientCategory);
+router.put('/ingredient-categories/:id', authMiddleware, adminOnly, updateIngredientCategory);
+router.delete('/ingredient-categories/:id', authMiddleware, adminOnly, deleteIngredientCategory);
 
 router.get('/', authMiddleware, adminOnly, getIngredients);
 router.post('/', authMiddleware, adminOnly, createIngredient);

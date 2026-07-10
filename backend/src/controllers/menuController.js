@@ -575,9 +575,15 @@ const updateRecipeItem = async (req, res) => {
     );
     if (r.rows.length === 0) return res.status(404).json({ message: 'Satr topilmadi' });
     const price = parseFloat(price_per_unit);
-    // П/Ф masaliq narxi qo'lda o'zgartirilmaydi — u o'z retseptidan sync bo'ladi
-    const ingInfo = await pool.query(`SELECT category FROM ingredients WHERE id = $1`, [r.rows[0].ingredient_id]);
-    const isPfIngredient = ingInfo.rows.length && ingInfo.rows[0].category === 'П/Ф';
+    // П/Ф masaliq narxi qo'lda o'zgartirilmaydi — u o'z retseptidan sync bo'ladi.
+    // P/F aniqlash: ISHONCHLI signal = pf menu_item ga bog'langanmi (type='pf'); 'П/Ф' string faqat fallback
+    // (magic-stringга yolg'iz bog'liq emas — nom/kategoriya xato yozilsa ham himoya ishlaydi).
+    const ingInfo = await pool.query(
+      `SELECT i.category,
+              EXISTS(SELECT 1 FROM menu_items m WHERE m.ingredient_id = i.id AND m.type = 'pf') AS pf_linked
+       FROM ingredients i WHERE i.id = $1`, [r.rows[0].ingredient_id]);
+    const isPfIngredient = ingInfo.rows.length &&
+      (ingInfo.rows[0].pf_linked === true || ingInfo.rows[0].category === 'П/Ф');
     if ((!isNaN(price) || unit) && !isPfIngredient) {
       await pool.query(
         `UPDATE ingredients SET

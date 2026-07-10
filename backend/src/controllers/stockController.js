@@ -507,9 +507,62 @@ const assignFromRecipe = async (req, res) => {
   }
 };
 
+// ─── INGREDIENT KATEGORIYALAR (ETAP 3.1 spravochnik — menu_categories kabi, id bo'yicha) ───
+const getIngredientCategories = async (req, res) => {
+  try {
+    const r = await pool.query(
+      `SELECT id, name, COALESCE(is_pf,false) AS is_pf, COALESCE(is_retail,false) AS is_retail
+       FROM ingredient_categories ORDER BY name`);
+    res.json(r.rows);
+  } catch (err) { res.status(500).json({ message: err.message }); }
+};
+const createIngredientCategory = async (req, res) => {
+  try {
+    const name = (req.body.name || '').toString().trim();
+    if (!name) return res.status(400).json({ message: 'Nom kerak' });
+    const is_pf = req.body.is_pf === true || req.body.is_pf === 'true';
+    const is_retail = req.body.is_retail === true || req.body.is_retail === 'true';
+    const r = await pool.query(
+      `INSERT INTO ingredient_categories (name, is_pf, is_retail) VALUES ($1,$2,$3)
+       ON CONFLICT (name) DO UPDATE SET is_pf=EXCLUDED.is_pf, is_retail=EXCLUDED.is_retail RETURNING *`,
+      [name, is_pf, is_retail]);
+    res.status(201).json(r.rows[0]);
+  } catch (err) { res.status(500).json({ message: err.message }); }
+};
+const updateIngredientCategory = async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const { id } = req.params;
+    const name = (req.body.name || '').toString().trim();
+    if (!name) { client.release(); return res.status(400).json({ message: 'Nom kerak' }); }
+    await client.query('BEGIN');
+    const old = await client.query(`SELECT 1 FROM ingredient_categories WHERE id=$1`, [id]);
+    if (!old.rows.length) { await client.query('ROLLBACK'); client.release(); return res.status(404).json({ message: 'Topilmadi' }); }
+    await client.query(`UPDATE ingredient_categories SET name=$1 WHERE id=$2`, [name, id]);
+    // rename propagatsiya (id bo'yicha): shu kategoriyали ingredientlarning string nomi ham yangilanadi
+    await client.query(`UPDATE ingredients SET category=$1 WHERE category_id=$2`, [name, id]);
+    await client.query('COMMIT');
+    res.json({ ok: true, name });
+  } catch (err) { await client.query('ROLLBACK').catch(()=>{}); res.status(500).json({ message: err.message }); }
+  finally { client.release(); }
+};
+const deleteIngredientCategory = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const used = await pool.query(`SELECT COUNT(*)::int AS n FROM ingredients WHERE category_id=$1`, [id]);
+    if (used.rows[0].n > 0) return res.status(400).json({ message: `Kategoriyada ${used.rows[0].n} ta mahsulot bor — avval ko'chiring.` });
+    await pool.query(`DELETE FROM ingredient_categories WHERE id=$1`, [id]);
+    res.json({ message: 'Kategoriya o\'chirildi' });
+  } catch (err) {
+    if (err.code === '23503') return res.status(400).json({ message: 'Kategoriya ishlatilmoqda.' });
+    res.status(500).json({ message: err.message });
+  }
+};
+
 module.exports = {
   getIngredients, createIngredient, addIncoming, getIncomingHistory, getLowStock, updateSellingPrice, deleteIngredient,
   mergeIngredient,
   editIngredient, getStockHistory, producePf,
-  getWarehouses, createWarehouse, updateWarehouse, deleteWarehouse, assignFromRecipe
+  getWarehouses, createWarehouse, updateWarehouse, deleteWarehouse, assignFromRecipe,
+  getIngredientCategories, createIngredientCategory, updateIngredientCategory, deleteIngredientCategory
 };
