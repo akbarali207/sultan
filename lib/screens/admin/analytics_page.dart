@@ -187,6 +187,9 @@ class _AnalyticsPageState extends State<AnalyticsPage> {
     final lossDishes = byDish.where((e) => _n(e['profit']) < 0).toList();
     final received = _n(s['received']);
     final expenses = _n(s['expenses']);
+    final salaryPaid = _n(s['salary_paid']); // davrда berilgan oylik+avans
+    final bonuses = _n(s['bonuses']);          // davrда berilgan bonuslar
+    final debtCollected = _n(s['debt_collected']); // davrда undirilgan qarz (foydaga qo'shildi)
 
     return [
       // KPI kartalar
@@ -199,17 +202,22 @@ class _AnalyticsPageState extends State<AnalyticsPage> {
         _kpi(tr('O\'rtacha chek'), _money(_n(s['avg_check'])), _n(s['avg_check']), _n(p['avg_check']), Colors.indigo, Icons.receipt_long),
         _kpi(tr('Zakazlar'), _n(s['orders']).toString(), _n(s['orders']), _n(p['orders']), Colors.purple, Icons.list_alt),
         _kpi(tr('Chegirma'), _money(_n(s['discount'])), _n(s['discount']), null, Colors.redAccent, Icons.percent, invert: true),
+        _kpi(tr('Oyliklar'), _money(salaryPaid), salaryPaid, _n(p['salary_paid']), Colors.deepOrange, Icons.payments, invert: true),
+        _kpi(tr('Bonuslar'), _money(bonuses), bonuses, _n(p['bonuses']), Colors.amber, Icons.card_giftcard, invert: true),
       ]),
       const SizedBox(height: 18),
 
       // Pul oqimi: kirim / chiqim / sof + ochiq qarz
       _card(tr('Pul oqimi'), Column(children: [
         _flowRow(tr('Kirim (kassaga)'), received, Colors.green),
+        if (debtCollected > 0) _flowRow(tr('Qarz undirildi'), debtCollected, Colors.teal),
         _flowRow(tr('Chiqim'), expenses, Colors.red),
+        if (salaryPaid > 0) _flowRow(tr('— shundan oylik/avans'), salaryPaid, Colors.deepOrange),
+        if (bonuses > 0) _flowRow(tr('Bonuslar (berildi)'), bonuses, Colors.amber),
         Divider(color: AppTheme.border, height: 18),
-        _flowRow(tr('Sof oqim'), received - expenses, (received - expenses) >= 0 ? Colors.green : Colors.red, bold: true),
+        _flowRow(tr('Sof foyda'), _n(s['profit']), _n(s['profit']) >= 0 ? Colors.green : Colors.red, bold: true),
         if (_n(debt['total']) > 0)
-          _flowRow('${tr('Ochiq qarz')} (${_n(debt['count'])})', _n(debt['total']), Colors.orange),
+          _flowRow('${tr('Ochiq qarz')} (${tr('to\'lanmagan')}, ${_n(debt['count'])})', _n(debt['total']), Colors.orange),
       ])),
 
       // Kunlik savdo grafigi

@@ -209,13 +209,14 @@ const getAnalytics = async (req, res) => {
                           THEN COALESCE(final_amount,total_amount) ELSE 0 END),0)`;
     const receivedExpr = `COALESCE(SUM(paid_card),0) + ${cashExpr}`;
 
-    const [sumCur, sumPrev, byDay, topItems, byCat, byHour, waiters, byDish, expBreak, debtRow, expCur, expPrev] = await Promise.all([
+    const [sumCur, sumPrev, byDay, topItems, byCat, byHour, waiters, byDish, expBreak, debtRow, expCur, expPrev, salaryAgg, bonusAgg, salaryKassaAgg, debtPaidAgg] = await Promise.all([
       pool.query(`SELECT COUNT(*)::int orders, COALESCE(SUM(COALESCE(final_amount,total_amount)),0) sales,
                     ${receivedExpr} received, COALESCE(SUM(paid_card),0) card, ${cashExpr} cash,
                     COALESCE(SUM(paid_debt),0) debt,
                     COALESCE(SUM(total_amount - COALESCE(final_amount,total_amount)),0) discount
                   FROM orders WHERE ${W}`, cur),
-      pool.query(`SELECT COUNT(*)::int orders, COALESCE(SUM(COALESCE(final_amount,total_amount)),0) sales
+      pool.query(`SELECT COUNT(*)::int orders, COALESCE(SUM(COALESCE(final_amount,total_amount)),0) sales,
+                    ${receivedExpr} received
                   FROM orders WHERE ${Wp}`, cur),
       pool.query(`SELECT to_char((created_at - INTERVAL '150 minutes')::date,'YYYY-MM-DD') d,
                     COALESCE(SUM(COALESCE(final_amount,total_amount)),0) sales, COUNT(*)::int orders
@@ -266,6 +267,26 @@ const getAnalytics = async (req, res) => {
                     + (SELECT COALESCE(SUM(amount),0) FROM expenses WHERE source<>'kassa' AND created_at>=$1 AND created_at<$2) expenses`, cur),
       pool.query(`SELECT (SELECT COALESCE(SUM(amount),0) FROM cash_transactions WHERE kind='expense' AND created_at>=${PREV} AND created_at<$1::timestamp)
                     + (SELECT COALESCE(SUM(amount),0) FROM expenses WHERE source<>'kassa' AND created_at>=${PREV} AND created_at<$1::timestamp) expenses`, cur),
+      // Ish haqi (oylik+avans) berildi — davr + oldingi davr (BARCHA manba: kassa va boshqa joydan)
+      pool.query(`SELECT
+                    COALESCE(SUM(amount) FILTER (WHERE created_at>=$1 AND created_at<$2),0) AS cur,
+                    COALESCE(SUM(amount) FILTER (WHERE created_at>=${PREV} AND created_at<$1::timestamp),0) AS prev
+                  FROM salary_payments`, cur),
+      // Bonuslar berildi — davr + oldingi davr
+      pool.query(`SELECT
+                    COALESCE(SUM(amount) FILTER (WHERE created_at>=$1 AND created_at<$2),0) AS cur,
+                    COALESCE(SUM(amount) FILTER (WHERE created_at>=${PREV} AND created_at<$1::timestamp),0) AS prev
+                  FROM salary_bonuses`, cur),
+      // Ish haqidан Kassaдан chiqqan qismi (expenses'ga ALLAQACHON kirgan — ikki marta ayirmaslik uchun)
+      pool.query(`SELECT
+                    COALESCE(SUM(amount) FILTER (WHERE created_at>=$1 AND created_at<$2),0) AS cur,
+                    COALESCE(SUM(amount) FILTER (WHERE created_at>=${PREV} AND created_at<$1::timestamp),0) AS prev
+                  FROM cash_transactions WHERE kind='expense' AND source IN ('salary','advance')`, cur),
+      // TO'LANGAN qarzlar (davrда undirilgan) — qarz FAQAT to'langanда foydaga qo'shiladi
+      pool.query(`SELECT
+                    COALESCE(SUM(amount) FILTER (WHERE created_at>=$1 AND created_at<$2),0) AS cur,
+                    COALESCE(SUM(amount) FILTER (WHERE created_at>=${PREV} AND created_at<$1::timestamp),0) AS prev
+                  FROM cash_transactions WHERE kind='income' AND source='debt'`, cur),
     ]);
 
     const cogs = await cogsForOrders(`o.status='paid' AND o.created_at >= $1 AND o.created_at < $2`, cur);
@@ -274,18 +295,38 @@ const getAnalytics = async (req, res) => {
     const s = sumCur.rows[0], p = sumPrev.rows[0];
     const sales = parseFloat(s.sales), orders = s.orders, expenses = parseFloat(expCur.rows[0].expenses);
     const pSales = parseFloat(p.sales), pOrders = p.orders, pExpenses = parseFloat(expPrev.rows[0].expenses);
+    const received = parseFloat(s.received), pReceived = parseFloat(p.received);
+
+    // Ish haqi: BARCHA to'lov (kassa+boshqa) profitдан ayirilishi kerak. Kassadan chiqqan qism
+    // expenses'ga allaqachon kirgan — faqat qolgan (boshqa joydan) qismini qo'shimcha ayiramiz (ikki marta emas).
+    const salaryPaid = parseFloat(salaryAgg.rows[0].cur), salaryPaidPrev = parseFloat(salaryAgg.rows[0].prev);
+    const bonuses = parseFloat(bonusAgg.rows[0].cur), bonusesPrev = parseFloat(bonusAgg.rows[0].prev);
+    const salaryKassa = parseFloat(salaryKassaAgg.rows[0].cur), salaryKassaPrev = parseFloat(salaryKassaAgg.rows[0].prev);
+    const extraLabor = Math.max(0, salaryPaid - salaryKassa);
+    const extraLaborPrev = Math.max(0, salaryPaidPrev - salaryKassaPrev);
+
+    // QARZ foydaga FAQAT to'langanда kiradi: realizatsiya = kassaga tushgan (karta+naqd, qarzsiz) + undirilgan qarz.
+    // Shunday qilib to'lanmagan qarz sof foydani oshirib yubormaydi (egasi shuni so'radi).
+    const debtPaid = parseFloat(debtPaidAgg.rows[0].cur), debtPaidPrev = parseFloat(debtPaidAgg.rows[0].prev);
+    const realized = received + debtPaid;
+    const realizedPrev = pReceived + debtPaidPrev;
+    const profit = realized - expenses - extraLabor;         // Sof foyda — qarz to'langanда, ish haqi ayirilgan
+    const profitPrev = realizedPrev - pExpenses - extraLaborPrev;
 
     res.json({
       period,
       summary: {
-        sales, received: parseFloat(s.received), discount: parseFloat(s.discount), orders,
+        sales, received, discount: parseFloat(s.discount), orders,
         avg_check: orders > 0 ? Math.round(sales / orders) : 0,
-        cogs, gross_profit: sales - cogs, expenses, profit: sales - expenses,
+        cogs, gross_profit: sales - cogs, expenses, profit,
+        salary_paid: salaryPaid, bonuses, // analitikaда ko'rsatiladi: qancha oylik/bonus berildi
+        debt_collected: debtPaid,         // davrда undirilgan qarz (foydaga qo'shildi)
       },
       prev: {
         sales: pSales, orders: pOrders,
         avg_check: pOrders > 0 ? Math.round(pSales / pOrders) : 0,
-        profit: pSales - pExpenses, gross_profit: pSales - cogsPrev, cogs: cogsPrev,
+        profit: profitPrev, gross_profit: pSales - cogsPrev, cogs: cogsPrev,
+        salary_paid: salaryPaidPrev, bonuses: bonusesPrev,
       },
       payment: { card: parseFloat(s.card), cash: parseFloat(s.cash), debt: parseFloat(s.debt) },
       sales_by_day: byDay.rows,
