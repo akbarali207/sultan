@@ -352,7 +352,19 @@ const getAnalytics = async (req, res) => {
 const getAttendanceReport = async (req, res) => {
   try {
     const { date } = req.query;
-    const filterDate = date || new Date().toISOString().split('T')[0];
+    // Sana berilmagan (default "bugun") -> JORIY BIZNES-KUN = oxirgi KASSA OCHILISHI kuni.
+    // Shunda yarim tunда 0 ga o'tib ketmaydi: ertalab kassa ochilmaguncha oldingi (ochiq) kun ko'rinadi.
+    // Kassa hech qachon ochilmagan bo'lsa -> 02:30 biznes-kun (zaxira).
+    let filterDate = date;
+    if (!filterDate) {
+      const bd = await pool.query(
+        `SELECT to_char(COALESCE(
+           (SELECT (created_at - INTERVAL '150 minutes')::date FROM cash_transactions
+            WHERE source = 'opening' ORDER BY created_at DESC LIMIT 1),
+           (NOW() - INTERVAL '150 minutes')::date), 'YYYY-MM-DD') AS d`
+      );
+      filterDate = bd.rows[0].d;
+    }
 
     // Har bir faol xodim uchun: o'sha kungi birinchi kirish va oxirgi chiqish
     const result = await pool.query(

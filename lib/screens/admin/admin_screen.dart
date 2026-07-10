@@ -5486,6 +5486,7 @@ class _ReportSectionState extends State<ReportSection> {
   // ── Davomat ──
   bool _attLoading = true;
   DateTime _date = DateTime.now();
+  bool _attDateAuto = true; // true: server JORIY biznes-kunni tanlaydi (kassa ochilishiga bog'liq), qo'lда tanlansa false
   Map<String, dynamic>? _report;
 
   @override
@@ -5514,9 +5515,18 @@ class _ReportSectionState extends State<ReportSection> {
   Future<void> _loadAttendance() async {
     setState(() => _attLoading = true);
     try {
-      final data = await ApiService.get('${AppConstants.attendanceReport}?date=$_dateStr');
+      // Avto rejimда sana YUBORMAYMIZ — server oxirgi kassa ochilishi kuni bo'yicha qaytaradi.
+      final url = _attDateAuto
+          ? AppConstants.attendanceReport
+          : '${AppConstants.attendanceReport}?date=$_dateStr';
+      final data = await ApiService.get(url);
       if (mounted) setState(() {
         _report = data is Map<String, dynamic> ? data : null;
+        // Server qaytargan biznes-kunni displayга sinxronlaymiz (chip shuni ko'rsatadi)
+        if (_attDateAuto && _report != null && _report!['date'] != null) {
+          final p = DateTime.tryParse(_report!['date'].toString());
+          if (p != null) _date = p;
+        }
         _attLoading = false;
       });
     } catch (_) {
@@ -5536,7 +5546,7 @@ class _ReportSectionState extends State<ReportSection> {
       ),
     );
     if (picked != null) {
-      setState(() => _date = picked);
+      setState(() { _date = picked; _attDateAuto = false; }); // qo'lда tanlandi -> aniq sana yuboriladi
       _loadAttendance();
     }
   }
