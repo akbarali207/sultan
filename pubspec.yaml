@@ -32,6 +32,8 @@ dev_dependencies:
 
 flutter:
   uses-material-design: true
+  assets:
+    - assets/icon/
 
 # Bitta icon -> Android / Windows / Web
 flutter_launcher_icons:

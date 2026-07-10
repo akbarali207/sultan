@@ -1254,6 +1254,7 @@ class _CashboxViewState extends State<CashboxView> {
                 controller: ctrl,
                 keyboardType: TextInputType.numberWithOptions(decimal: true),
                 autofocus: true,
+                onTap: () => ctrl.selection = TextSelection(baseOffset: 0, extentOffset: ctrl.text.length),
                 style: TextStyle(color: AppTheme.text),
                 decoration: InputDecoration(
                   labelText: tr('Summa'),
@@ -1384,6 +1385,7 @@ class _CashboxViewState extends State<CashboxView> {
               controller: ctrl,
               keyboardType: TextInputType.numberWithOptions(decimal: true),
               autofocus: true,
+              onTap: () => ctrl.selection = TextSelection(baseOffset: 0, extentOffset: ctrl.text.length),
               style: TextStyle(color: AppTheme.text),
               decoration: InputDecoration(
                   labelText: tr('Boshlang\'ich summa'), suffixText: tr('so\'m'),

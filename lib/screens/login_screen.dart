@@ -20,6 +20,7 @@ class LoginScreen extends StatefulWidget {
 class _LoginScreenState extends State<LoginScreen> {
   final _phoneController = TextEditingController();
   final _passwordController = TextEditingController();
+  final _passwordFocus = FocusNode(); // raqamdan keyin Enter -> parolga o'tish uchun
   bool _obscurePassword = true;
   bool _isLoadingBiometric = false;
   bool _hasBiometric = false;
@@ -29,6 +30,14 @@ class _LoginScreenState extends State<LoginScreen> {
   void initState() {
     super.initState();
     _checkBiometric();
+  }
+
+  @override
+  void dispose() {
+    _phoneController.dispose();
+    _passwordController.dispose();
+    _passwordFocus.dispose();
+    super.dispose();
   }
 
   Future<void> _checkBiometric() async {
@@ -263,13 +272,19 @@ class _LoginScreenState extends State<LoginScreen> {
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              Icon(Icons.restaurant, size: 80, color: AppTheme.accent),
-              const SizedBox(height: 16),
-              Text(
-                tr('Sultan Restoran'),
-                style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold, color: AppTheme.text),
+              // Restoran logotipi (qora fon + oltin toj) — dumaloq ramkada
+              Container(
+                decoration: BoxDecoration(
+                  color: Colors.black,
+                  borderRadius: BorderRadius.circular(28),
+                  boxShadow: [
+                    BoxShadow(color: Colors.black.withValues(alpha: 0.25), blurRadius: 18, offset: const Offset(0, 6)),
+                  ],
+                ),
+                clipBehavior: Clip.antiAlias,
+                child: Image.asset('assets/icon/app_icon.png', width: 150, height: 150, fit: BoxFit.cover),
               ),
-              const SizedBox(height: 8),
+              const SizedBox(height: 16),
               Text(tr('Tizimga kirish'),
                   style: TextStyle(color: AppTheme.textSoft, fontSize: 16)),
               const SizedBox(height: 40),
@@ -305,6 +320,8 @@ class _LoginScreenState extends State<LoginScreen> {
                   controller: _phoneController,
                   style: TextStyle(color: AppTheme.text),
                   keyboardType: TextInputType.phone,
+                  textInputAction: TextInputAction.next,
+                  onSubmitted: (_) => FocusScope.of(context).requestFocus(_passwordFocus),
                   decoration: InputDecoration(
                     labelText: tr('Telefon raqam'),
                     labelStyle: TextStyle(color: AppTheme.textSoft),
@@ -323,8 +340,11 @@ class _LoginScreenState extends State<LoginScreen> {
                 const SizedBox(height: 16),
                 TextField(
                   controller: _passwordController,
+                  focusNode: _passwordFocus,
                   style: TextStyle(color: AppTheme.text),
                   obscureText: _obscurePassword,
+                  textInputAction: TextInputAction.done,
+                  onSubmitted: (_) { if (!auth.isLoading) _login(); },
                   decoration: InputDecoration(
                     labelText: tr('Parol'),
                     labelStyle: TextStyle(color: AppTheme.textSoft),

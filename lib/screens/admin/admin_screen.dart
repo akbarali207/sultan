@@ -484,7 +484,8 @@ class _DashboardSectionState extends State<DashboardSection> {
             final sold = double.tryParse(it['sold'].toString()) ?? 0;
             final remaining = double.tryParse(it['remaining'].toString()) ?? 0;
             final hasOpening = it['has_opening'] == true;
-            final ctrl = _dailyCtrls[id] ?? TextEditingController(text: opening.toStringAsFixed(0));
+            // 0 bo'lsa bo'sh ko'rsatamiz ('—' hint) — o'chirib qayta yozish shart emas
+            final ctrl = _dailyCtrls[id] ?? TextEditingController(text: opening > 0 ? opening.toStringAsFixed(0) : '');
             final done = hasOpening && remaining <= 0;
             return Padding(
               padding: const EdgeInsets.symmetric(vertical: 5),
@@ -500,6 +501,7 @@ class _DashboardSectionState extends State<DashboardSection> {
                       keyboardType: TextInputType.numberWithOptions(decimal: true),
                       textAlign: TextAlign.center,
                       style: TextStyle(color: AppTheme.text, fontSize: 13),
+                      onTap: () => ctrl.selection = TextSelection(baseOffset: 0, extentOffset: ctrl.text.length),
                       decoration: InputDecoration(
                         isDense: true,
                         contentPadding: const EdgeInsets.symmetric(vertical: 6),
@@ -1823,7 +1825,15 @@ class _MenuSectionState extends State<MenuSection> with SingleTickerProviderStat
       inputFormatters: isNumber ? decimalFormatters : null,
       style: TextStyle(color: AppTheme.text),
       decoration: _inputDecoration(label, icon),
-      onTap: onTap,
+      // Enter bosilганда keyingi maydonga o'tadi (forma bo'ylab qulay harakat)
+      textInputAction: TextInputAction.next,
+      onSubmitted: (_) => FocusScope.of(context).nextFocus(),
+      // Raqamli maydon bosilганда butun qiymat belgilanadi — 0/eski qiymatni qo'lда o'chirmay ustidan yozish mumkin
+      onTap: onTap ??
+          (isNumber
+              ? () => controller.selection =
+                  TextSelection(baseOffset: 0, extentOffset: controller.text.length)
+              : null),
     );
   }
 
@@ -4338,6 +4348,13 @@ class _StaffSectionState extends State<StaffSection> {
       keyboardType: isNumber ? TextInputType.numberWithOptions(decimal: true) : TextInputType.text,
       style: TextStyle(color: AppTheme.text),
       decoration: _inputDecoration(label, icon),
+      textInputAction: TextInputAction.next,
+      onSubmitted: (_) => FocusScope.of(context).nextFocus(),
+      // Raqamli maydon bosilганда butun qiymat belgilanadi (0/eski qiymat ustidan yozish qulay)
+      onTap: isNumber
+          ? () => controller.selection =
+              TextSelection(baseOffset: 0, extentOffset: controller.text.length)
+          : null,
     );
   }
 
@@ -4860,6 +4877,8 @@ class _StaffSectionState extends State<StaffSection> {
                                     controller: rateCtrls[id],
                                     keyboardType: const TextInputType.numberWithOptions(decimal: true),
                                     style: TextStyle(color: AppTheme.text, fontSize: 13),
+                                    onTap: () => rateCtrls[id]?.selection = TextSelection(
+                                        baseOffset: 0, extentOffset: rateCtrls[id]!.text.length),
                                     decoration: InputDecoration(
                                       hintText: tr('stavka'),
                                       hintStyle: TextStyle(color: AppTheme.textSoft, fontSize: 12),
