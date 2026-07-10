@@ -237,10 +237,19 @@ const createMenuItem = async (req, res) => {
         });
       }
     }
+    // Menyu<->sklad sync: PRODUCT qo'shilsa lekin sklad-ingredient tanlanmagan bo'lsa -> avtomatik yaratamiz
+    // (mahsulot skladda ham paydo bo'ladi; kirim narxi shu yerdan kiritiladi -> tannarx to'g'ri).
+    let effIngId = ingId;
+    if (itemType === 'product' && !effIngId) {
+      const ni = await client.query(
+        `INSERT INTO ingredients (name, unit, price_per_unit, category) VALUES ($1, 'dona', 0, 'Продукция') RETURNING id`,
+        [cleanName]);
+      effIngId = ni.rows[0].id;
+    }
     const result = await client.query(
       `INSERT INTO menu_items (category_id, name, price, image_url, type, ingredient_id, station_id)
        VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
-      [category_id, cleanName, price, image_url, itemType, ingId, primary]
+      [category_id, cleanName, price, image_url, itemType, effIngId, primary]
     );
     const itemId = result.rows[0].id;
     for (const sid of stationIds) {
@@ -285,6 +294,13 @@ const updateMenuItem = async (req, res) => {
       params = [category_id, cleanName, price, is_active, primary, id];
     }
     const result = await client.query(query, params);
+    // Menyu<->sklad NOM sync: product/pf menyu nomi o'zgarsa, bog'langan ingredient nomi ham (bir xil qoladi)
+    {
+      const upd = result.rows[0];
+      if (upd && upd.ingredient_id && (upd.type === 'product' || upd.type === 'pf') && cleanName && cleanName.length) {
+        await client.query(`UPDATE ingredients SET name = $1 WHERE id = $2`, [cleanName, upd.ingredient_id]);
+      }
+    }
     // Bo'limlar berilgan bo'lsa — junction'ni qayta yozamiz
     if (stationProvided) {
       await client.query(`DELETE FROM menu_item_stations WHERE menu_item_id = $1`, [id]);
