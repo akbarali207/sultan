@@ -40,16 +40,22 @@ const updateCategory = async (req, res) => {
 const deleteCategory = async (req, res) => {
   try {
     const { id } = req.params;
+    // FK NO ACTION: ARXIV (is_active=false) taomlar ham bog'lanadi -> hard delete 23503 (500) berardi.
+    // Shuning uchun BARCHA taomlarni sanaymiz (faol + arxiv) va silliq javob qaytaramiz.
     const check = await pool.query(
-      `SELECT COUNT(*) FROM menu_items WHERE category_id=$1 AND is_active=true`,
-      [id]
-    );
-    if (parseInt(check.rows[0].count) > 0) {
-      return res.status(400).json({ message: 'Kategoriyada faol taomlar bor. Avval taomlarni o\'chiring!' });
+      `SELECT COUNT(*)::int AS n, COUNT(*) FILTER (WHERE is_active=true)::int AS active
+       FROM menu_items WHERE category_id=$1`, [id]);
+    const { n, active } = check.rows[0];
+    if (active > 0) {
+      return res.status(400).json({ message: 'Kategoriyada faol taomlar bor. Avval taomlarni o\'chiring yoki boshqa kategoriyaga o\'tkazing!' });
+    }
+    if (n > 0) {
+      return res.status(400).json({ message: `Kategoriyada ${n} ta arxiv taom bor — o'chirib bo'lmaydi (tarix saqlanadi). Kerak bo'lsa nomini o'zgartiring.` });
     }
     await pool.query(`DELETE FROM menu_categories WHERE id=$1`, [id]);
     res.json({ message: 'Kategoriya o\'chirildi!' });
   } catch (err) {
+    if (err.code === '23503') return res.status(400).json({ message: 'Kategoriya ishlatilmoqda — o\'chirib bo\'lmaydi.' });
     res.status(500).json({ message: err.message });
   }
 };

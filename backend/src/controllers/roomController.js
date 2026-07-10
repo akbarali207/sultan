@@ -51,18 +51,26 @@ const updateRoom = async (req, res) => {
   }
 };
 
-// Xonani o'chirish — avval shu xonadagi stollarni, keyin xonani
+// Xonani o'chirish — zakaz tarixi bor stollar ARXIVLANADI (o'chmaydi), bo'shlari o'chadi, keyin xona.
+// (Ilgari DELETE FROM tables order-history FK'ga urilib 500 berardi va butun o'chirish qaytardi.)
 const deleteRoom = async (req, res) => {
   const { id } = req.params;
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-    await client.query(`DELETE FROM tables WHERE room_id = $1`, [id]);
+    // Zakaz tarixi bor stollar: soft-delete + xonadan uzamiz (tarix saqlanadi)
+    await client.query(
+      `UPDATE tables SET is_active = false, room_id = NULL
+       WHERE room_id = $1 AND id IN (SELECT DISTINCT table_id FROM orders WHERE table_id IS NOT NULL)`, [id]);
+    // Tarixsiz stollar: xavfsiz hard-delete
+    await client.query(
+      `DELETE FROM tables WHERE room_id = $1
+       AND id NOT IN (SELECT DISTINCT table_id FROM orders WHERE table_id IS NOT NULL)`, [id]);
     await client.query(`DELETE FROM rooms WHERE id = $1`, [id]);
     await client.query('COMMIT');
     res.json({ message: "Xona o'chirildi" });
   } catch (err) {
-    await client.query('ROLLBACK');
+    await client.query('ROLLBACK').catch(() => {});
     res.status(500).json({ message: err.message });
   } finally {
     client.release();
@@ -127,13 +135,23 @@ const updateTable = async (req, res) => {
   }
 };
 
-// Stolni o'chirish
+// Stolni o'chirish — zakaz tarixi bo'lsa ARXIVLANADI (soft-delete), aks holda o'chadi.
+// (Ilgari hard DELETE order-history FK'ga urilib 500 berardi — 9 kunlik zalda ko'p stol o'chmasdi.)
 const deleteTable = async (req, res) => {
+  const { id } = req.params;
   try {
-    const { id } = req.params;
+    const used = await pool.query(`SELECT 1 FROM orders WHERE table_id = $1 LIMIT 1`, [id]);
+    if (used.rows.length) {
+      await pool.query(`UPDATE tables SET is_active = false WHERE id = $1`, [id]);
+      return res.json({ message: "Stol arxivlandi (zakaz tarixi bor)" });
+    }
     await pool.query(`DELETE FROM tables WHERE id = $1`, [id]);
     res.json({ message: "Stol o'chirildi" });
   } catch (err) {
+    if (err.code === '23503') { // FK to'sig'i — silliq arxivlash
+      try { await pool.query(`UPDATE tables SET is_active = false WHERE id = $1`, [id]); } catch (_) {}
+      return res.json({ message: "Stol arxivlandi (bog'liq yozuvlar bor)" });
+    }
     res.status(500).json({ message: err.message });
   }
 };
