@@ -569,13 +569,14 @@ const getPayroll = async (req, res) => {
     // Davomat: kun soni, soat va kechikish jarimasini xodim bo'yicha yig'amiz
     const acc = {};
     for (const u of emp.rows) {
-      acc[u.id] = { work_start: u.work_start, late_fine: parseFloat(u.late_fine_per_minute), days: 0, hours: 0, fine: 0 };
+      acc[u.id] = { work_start: u.work_start, late_fine: parseFloat(u.late_fine_per_minute), days: 0, hours: 0, fine: 0, hoursList: [] };
     }
     for (const a of att.rows) {
       const e = acc[a.user_id];
       if (!e) continue;
       e.days += 1;
       e.hours += parseFloat(a.hours);
+      e.hoursList.push(parseFloat(a.hours) || 0); // shift-oylik uchun HAR KUN alohida soat
       if (e.work_start && a.first_in) {
         const [wh, wm] = e.work_start.split(':').map(Number);
         const [ch, cm] = a.first_in.split(':').map(Number);
@@ -606,6 +607,17 @@ const getPayroll = async (req, res) => {
           break;
         case 'percent_total': base = totalSales * sv / 100; break; // kassir: jami tushumdan foiz
         case 'piece':   base = pieceMap[u.id] || 0; break;         // sdelnaya: dona-stavka yig'indisi
+        case 'shift': {
+          // STAVKA (smena) — HAR KUN alohida. sv = 1 to'liq smena stavkasi.
+          //  kun >= 11:50 (710 daq) -> 1 stavka;  agar > 12:00 (720 daq) -> + (ortiqcha daq × stavka/720) bonus;
+          //  kun < 11:50 -> 0.5 stavka (kam ishlagan). Bonus base ichida -> oylik tarixiga kiradi.
+          base = (e.hoursList || []).reduce((acc2, h) => {
+            const m = (h || 0) * 60;
+            if (m >= 710) return acc2 + (m > 720 ? sv + (m - 720) * (sv / 720) : sv);
+            return acc2 + sv * 0.5;
+          }, 0);
+          break;
+        }
         case 'monthly': base = sv; break;
         case 'daily':   base = e.days * sv; break;
         case 'hourly':  base = hours * sv; break;

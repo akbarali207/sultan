@@ -4157,6 +4157,7 @@ class _StaffSectionState extends State<StaffSection> {
     {'value': 'percent', 'label': tr('Savdodan foiz (%)')},
     {'value': 'percent_total', 'label': tr('Jami tushumdan foiz (%)')},
     {'value': 'piece', 'label': tr('Dona uchun (sdelnaya)')},
+    {'value': 'shift', 'label': tr('Stavka (smena)')},
   ];
 
   @override
@@ -4850,6 +4851,7 @@ class _StaffSectionState extends State<StaffSection> {
       case 'percent': return tr('Foiz');
       case 'percent_total': return tr('Jami tushumdan foiz');
       case 'piece': return tr('Dona uchun');
+      case 'shift': return tr('Stavka (smena)');
       default: return type;
     }
   }
@@ -8232,6 +8234,7 @@ class _PayrollSectionState extends State<PayrollSection> {
       case 'percent': return tr('Savdodan foiz (%)');
       case 'percent_total': return tr('Jami tushumdan foiz (%)');
       case 'piece': return tr('Dona uchun (sdelnaya)');
+      case 'shift': return tr('Stavka (smena)');
       default: return t;
     }
   }
@@ -8266,6 +8269,9 @@ class _PayrollSectionState extends State<PayrollSection> {
       case 'piece':
         final pb = double.tryParse(s['piece_base']?.toString() ?? '0') ?? 0;
         return '${tr('Dona uchun')}: ${_money(pb)}';
+      case 'shift':
+        final d = (s['days_worked'] as num?)?.toInt() ?? 0;
+        return '${tr('Stavka')}: ${_money(val)}  •  $d ${tr('smena')} (11:50=1, <=0.5, 12+ bonus)';
       case 'monthly':
         return tr('Belgilangan oylik');
       case 'daily':

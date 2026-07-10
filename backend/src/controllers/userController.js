@@ -168,7 +168,7 @@ const getAttendance = async (req, res) => {
        FROM attendance a
        JOIN users u ON a.user_id = u.id
        JOIN roles r ON u.role_id = r.id
-       WHERE DATE(a.check_in) = $1
+       WHERE (a.check_in - INTERVAL '150 minutes')::date = $1
        ORDER BY a.check_in DESC`,
       [filterDate]
     );
