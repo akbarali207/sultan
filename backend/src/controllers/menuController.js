@@ -449,7 +449,9 @@ const getMenuItemCost = async (req, res) => {
       return res.status(404).json({ message: 'Taom topilmadi' });
     }
     const menuItem = itemResult.rows[0];
-    const price = parseFloat(menuItem.price);
+    // NARX NULL bo'lsa (masalan P/F yoki narxsiz taom) parseFloat NaN beradi -> profit NaN ->
+    // JSON'да null bo'lib ketadi va frontendда "Null is not num" xatosi chiqadi. Shuning uchun 0 ga tushiramiz.
+    const price = parseFloat(menuItem.price) || 0;
 
     // Product type: tannarx = ingredient.price_per_unit
     if (menuItem.type === 'product' && menuItem.ingredient_id) {

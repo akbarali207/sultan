@@ -1800,7 +1800,9 @@ class _MenuSectionState extends State<MenuSection> with SingleTickerProviderStat
     for (final item in _items) {
       final id = item['id'] as int;
       ApiService.get('/menu/items/$id/cost').then((data) {
-        if (mounted && data is Map) {
+        // FAQAT haqiqiy tannarx javobini saqlaymiz — xato obyekti ({message:...}) yoki
+        // profit'siz javob saqlanmasin (aks holda cost['profit'] null bo'lib "Blyuda" krash bo'lardi).
+        if (mounted && data is Map && data['profit'] is num) {
           setState(() => _costs[id] = Map<String, dynamic>.from(data));
         }
       }).catchError((_) {});
@@ -2644,11 +2646,11 @@ class _MenuSectionState extends State<MenuSection> with SingleTickerProviderStat
                     style: TextStyle(color: AppTheme.text, fontWeight: FontWeight.bold)),
                 const SizedBox(height: 4),
                 if (cost != null) ...[
-                  Text('${tr('Tannarx')}: ${cost['cost']} ${tr('so\'m')}',
+                  Text('${tr('Tannarx')}: ${(cost['cost'] as num?) ?? 0} ${tr('so\'m')}',
                       style: TextStyle(color: Colors.orange.shade800, fontSize: 12)),
-                  Text('${tr('Foyda')}: ${cost['profit']} ${tr('so\'m')}  (${cost['profit_percent']}%)',
+                  Text('${tr('Foyda')}: ${(cost['profit'] as num?) ?? 0} ${tr('so\'m')}  (${(cost['profit_percent'] as num?) ?? 0}%)',
                       style: TextStyle(
-                        color: (cost['profit'] as num) >= 0 ? Colors.green.shade700 : Colors.red,
+                        color: ((cost['profit'] as num?) ?? 0) >= 0 ? Colors.green.shade700 : Colors.red,
                         fontSize: 12,
                       )),
                 ] else
