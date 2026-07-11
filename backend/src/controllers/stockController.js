@@ -95,9 +95,15 @@ const addIncoming = async (req, res) => {
       ? parseInt(req.body.category_id) : null;
 
     if (isRetail && spRaw !== null && spRaw > 0) {
+      // O'RTACHA-VAZNLI (moving average) tannarx: eski qoldiq × eski narx + kirim × kirim narxi, bo'lingan jami qoldiqqa.
+      // Eski qoldiq/narx 0 yoki manfiy bo'lsa — faqat kirim narxi (0 bilan o'rtachalab pasaytirmaymiz).
       await client.query(
         `UPDATE ingredients
-         SET stock_quantity = stock_quantity + $1, price_per_unit = $2, selling_price = $3
+         SET price_per_unit = CASE WHEN stock_quantity > 0 AND price_per_unit > 0
+               THEN (stock_quantity * price_per_unit + $1 * $2) / (stock_quantity + $1)
+               ELSE $2 END,
+             stock_quantity = stock_quantity + $1,
+             selling_price = $3
          WHERE id = $4`,
         [quantity, price_per_unit, spRaw, ingredient_id]
       );
@@ -120,16 +126,24 @@ const addIncoming = async (req, res) => {
         );
       }
     } else {
-      // Oshxona ingredienti — faqat qoldiq va kirim narxi yangilanadi (selling_price tegilmaydi)
+      // Oshxona ingredienti — O'RTACHA-VAZNLI tannarx (yuqoridagi kabi), selling_price tegilmaydi.
       await client.query(
         `UPDATE ingredients
-         SET stock_quantity = stock_quantity + $1, price_per_unit = $2
+         SET price_per_unit = CASE WHEN stock_quantity > 0 AND price_per_unit > 0
+               THEN (stock_quantity * price_per_unit + $1 * $2) / (stock_quantity + $1)
+               ELSE $2 END,
+             stock_quantity = stock_quantity + $1
          WHERE id = $3`,
         [quantity, price_per_unit, ingredient_id]
       );
     }
 
     await client.query('COMMIT');
+    // Narx o'zgardi -> shu masaliqni ishlatgan P/F tannarxlarини qayta hisoblaymiz (retsept narxlari yangilanadi)
+    try {
+      const { syncPfCostsUsingIngredient } = require('./menuController');
+      await syncPfCostsUsingIngredient(ingredient_id);
+    } catch (_) {}
     res.status(201).json({ message: 'Mahsulot qabul qilindi!', total_amount });
   } catch (err) {
     await client.query('ROLLBACK');
@@ -305,7 +319,12 @@ const producePf = async (req, res) => {
         return res.status(400).json({ message: 'Sotib olishda kg narxi (price_per_kg) kerak' });
       }
       await client.query(
-        `UPDATE ingredients SET stock_quantity = stock_quantity + $1, price_per_unit = $2 WHERE id = $3`,
+        `UPDATE ingredients
+         SET price_per_unit = CASE WHEN stock_quantity > 0 AND price_per_unit > 0
+               THEN (stock_quantity * price_per_unit + $1 * $2) / (stock_quantity + $1)
+               ELSE $2 END,
+             stock_quantity = stock_quantity + $1
+         WHERE id = $3`,
         [qty, pricePerKg, ingId]);
       const total = qty * pricePerKg;
       const fromKassa = req.body.from_kassa !== false && req.body.from_kassa !== 'false';

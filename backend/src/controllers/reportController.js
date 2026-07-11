@@ -227,9 +227,12 @@ const getAnalytics = async (req, res) => {
                   FROM order_items oi JOIN menu_items m ON oi.menu_item_id=m.id JOIN orders o ON oi.order_id=o.id
                   WHERE o.status='paid' AND o.created_at>=$1 AND o.created_at<$2
                   GROUP BY m.name ORDER BY amount DESC LIMIT 12`, cur),
-      pool.query(`SELECT c.name, SUM(oi.quantity)::int qty, COALESCE(SUM(oi.price*oi.quantity),0) sales
+      pool.query(`SELECT c.name, SUM(oi.quantity)::int qty,
+                    COALESCE(SUM(oi.price*oi.quantity),0) sales,
+                    COALESCE(SUM(oi.quantity * COALESCE(cc.cost,0)),0) cost
                   FROM order_items oi JOIN orders o ON oi.order_id=o.id
                   JOIN menu_items m ON oi.menu_item_id=m.id JOIN menu_categories c ON m.category_id=c.id
+                  LEFT JOIN (${MENU_COST_SUBQUERY}) cc ON cc.menu_item_id = oi.menu_item_id
                   WHERE o.status='paid' AND o.created_at>=$1 AND o.created_at<$2
                   GROUP BY c.name ORDER BY sales DESC`, cur),
       pool.query(`SELECT EXTRACT(HOUR FROM created_at)::int h, COALESCE(SUM(COALESCE(final_amount,total_amount)),0) sales

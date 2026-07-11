@@ -162,6 +162,11 @@ const Map<String, String> _ru = {
   'Oy': 'Месяц',
   'Savdo': 'Продажи',
   'Sof foyda': 'Чистая прибыль',
+  'Yalpi foyda': 'Валовая прибыль',
+  'Kassaga tushdi': 'Поступило в кассу',
+  'Marja': 'Маржа',
+  'Oyliklar': 'Зарплаты',
+  'Qarz undirildi': 'Долг погашен',
   'O\'rtacha chek': 'Средний чек',
   'Band stollar': 'Занятые столы',
   'Ishda xodim': 'На смене',
@@ -520,7 +525,7 @@ const Map<String, String> _ru = {
 
   // ── Kassa (qo'shimcha) ──
   'Kassa': 'Касса',
-  'Tushum': 'Приход',
+  'Tushum': 'Выручка',
   'Chiqim': 'Расход',
   'Tranzaksiyalar': 'Транзакции',
   'Qarzdorlar': 'Должники',

@@ -658,5 +658,6 @@ module.exports = {
   getMenuItems, createMenuItem, updateMenuItem, deleteMenuItem, setMenuAvailability, setDailyTracked, getMenuItemCost,
   createPfItem, setYield,
   getIngredients, createIngredient, updateIngredient,
-  getRecipe, addRecipeItem, updateRecipeItem, deleteRecipeItem
+  getRecipe, addRecipeItem, updateRecipeItem, deleteRecipeItem,
+  syncPfCostsUsingIngredient // masaliq narxi o'zgarganda P/F tannarxini qayta hisoblash (stockController ishlatadi)
 };

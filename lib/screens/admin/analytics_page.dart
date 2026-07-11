@@ -197,7 +197,7 @@ class _AnalyticsPageState extends State<AnalyticsPage> {
         _kpi(tr('Savdo'), _money(_n(s['sales'])), _n(s['sales']), _n(p['sales']), Colors.blue, Icons.trending_up),
         _kpi(tr('Sof foyda'), _money(_n(s['profit'])), _n(s['profit']), _n(p['profit']), Colors.green, Icons.savings),
         _kpi(tr('Kassaga tushdi'), _money(_n(s['received'])), _n(s['received']), null, Colors.teal, Icons.account_balance_wallet),
-        _kpi(tr('Valovaya foyda'), _money(_n(s['gross_profit'])), _n(s['gross_profit']), _n(p['gross_profit']), Colors.lightGreen, Icons.show_chart),
+        _kpi(tr('Yalpi foyda'), _money(_n(s['gross_profit'])), _n(s['gross_profit']), _n(p['gross_profit']), Colors.lightGreen, Icons.show_chart),
         _kpi(tr('Tannarx'), _money(_n(s['cogs'])), _n(s['cogs']), _n(p['cogs']), Colors.orange, Icons.inventory_2, invert: true),
         _kpi(tr('O\'rtacha chek'), _money(_n(s['avg_check'])), _n(s['avg_check']), _n(p['avg_check']), Colors.indigo, Icons.receipt_long),
         _kpi(tr('Zakazlar'), _n(s['orders']).toString(), _n(s['orders']), _n(p['orders']), Colors.purple, Icons.list_alt),
@@ -248,12 +248,38 @@ class _AnalyticsPageState extends State<AnalyticsPage> {
         if (top.isEmpty) _empty(),
       ])),
 
-      // Kategoriya
-      _card(tr('Kategoriya bo\'yicha'), Column(children: [
-        for (final e in cats)
-          _hbar(e['name']?.toString() ?? '', _n(e['sales']),
-              cats.isNotEmpty ? _n(cats.first['sales']) : 0, Colors.deepPurple),
-        if (cats.isEmpty) _empty(),
+      // Kategoriya bo'yicha — tushum / foyda / marja (biznes ko'rinish)
+      _card(tr('Kategoriya bo\'yicha'), cats.isEmpty ? _empty() : Column(children: [
+        Padding(
+          padding: const EdgeInsets.only(bottom: 4),
+          child: Row(children: [
+            Expanded(flex: 5, child: Text(tr('Kategoriya'), style: _thStyle)),
+            Expanded(flex: 3, child: Text(tr('Tushum'), textAlign: TextAlign.right, style: _thStyle)),
+            Expanded(flex: 3, child: Text(tr('Foyda'), textAlign: TextAlign.right, style: _thStyle)),
+            SizedBox(width: 40, child: Text(tr('Marja'), textAlign: TextAlign.right, style: _thStyle)),
+          ]),
+        ),
+        Divider(color: AppTheme.border, height: 8),
+        ...cats.map<Widget>((e) {
+          final sales = _n(e['sales']);
+          final cost = _n(e['cost']);
+          final profit = sales - cost;
+          final margin = sales > 0 ? (profit / sales * 100).round() : 0;
+          return Padding(
+            padding: const EdgeInsets.symmetric(vertical: 3),
+            child: Row(children: [
+              Expanded(flex: 5, child: Text('${e['name'] ?? ''}  ·  ${_n(e['qty'])} ${tr('dona')}',
+                  maxLines: 1, overflow: TextOverflow.ellipsis,
+                  style: TextStyle(color: AppTheme.text, fontSize: 12))),
+              Expanded(flex: 3, child: Text(_money(sales), textAlign: TextAlign.right,
+                  style: TextStyle(color: AppTheme.text, fontSize: 12))),
+              Expanded(flex: 3, child: Text(_money(profit), textAlign: TextAlign.right,
+                  style: TextStyle(color: profit < 0 ? Colors.red : Colors.green, fontSize: 12, fontWeight: FontWeight.w600))),
+              SizedBox(width: 40, child: Text('$margin%', textAlign: TextAlign.right,
+                  style: TextStyle(color: AppTheme.textSoft, fontSize: 12))),
+            ]),
+          );
+        }),
       ])),
 
       // Zararli blyudolar (foyda < 0) — audit uchun alohida ajratib
@@ -329,6 +355,9 @@ class _AnalyticsPageState extends State<AnalyticsPage> {
       );
 
   Widget _empty() => Padding(padding: const EdgeInsets.symmetric(vertical: 8), child: Text(tr('Ma\'lumot yo\'q'), style: TextStyle(color: AppTheme.textSoft, fontSize: 12)));
+
+  // Jadval sarlavha uslubi (kategoriya/biznes jadvallar)
+  TextStyle get _thStyle => TextStyle(color: AppTheme.textSoft, fontSize: 11, fontWeight: FontWeight.bold);
 
   // pul oqimi qatori (nom + rangli summa)
   Widget _flowRow(String label, num value, Color color, {bool bold = false}) => Padding(
