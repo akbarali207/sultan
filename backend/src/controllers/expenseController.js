@@ -67,13 +67,14 @@ const getExpenses = async (req, res) => {
     const { date, period } = req.query;
     let whereClause;
     const params = [];
+    // Biznes-kun (02:30) — Hisobot/Kassa bilan mos.
     if (period === 'week') {
-      whereClause = `e.created_at >= CURRENT_DATE - INTERVAL '6 days'`;
+      whereClause = `(e.created_at - INTERVAL '150 minutes')::date >= (NOW() - INTERVAL '150 minutes')::date - 6`;
     } else if (period === 'month') {
-      whereClause = `e.created_at >= date_trunc('month', CURRENT_DATE)`;
+      whereClause = `(e.created_at - INTERVAL '150 minutes')::date >= date_trunc('month', (NOW() - INTERVAL '150 minutes')::date)::date`;
     } else {
       params.push(date || new Date().toISOString().split('T')[0]);
-      whereClause = `DATE(e.created_at) = $1`;
+      whereClause = `(e.created_at - INTERVAL '150 minutes')::date = $1::date`;
     }
     const result = await pool.query(
       `SELECT e.*, et.name as type_name
@@ -131,10 +132,13 @@ const createExpense = async (req, res) => {
 const getOutflows = async (req, res) => {
   try {
     const period = req.query.period || 'today';
+    // Biznes-kun (02:30) — boshqa barcha hisobotlar bilan bir xil (Xarajatlar Hisobot/Kassa bilan mos kelsin).
+    const bd = (col) => `(${col} - INTERVAL '150 minutes')::date`;
+    const bnow = `(NOW() - INTERVAL '150 minutes')::date`;
     const w = (col) =>
-      period === 'week' ? `${col} >= CURRENT_DATE - INTERVAL '6 days'`
-        : period === 'month' ? `${col} >= date_trunc('month', CURRENT_DATE)`
-          : `DATE(${col}) = CURRENT_DATE`;
+      period === 'week' ? `${bd(col)} >= ${bnow} - 6`
+        : period === 'month' ? `${bd(col)} >= date_trunc('month', ${bnow})::date`
+          : `${bd(col)} = ${bnow}`;
 
     const [kassa, other, kassaAgg] = await Promise.all([
       pool.query(

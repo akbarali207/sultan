@@ -20,15 +20,25 @@ async function daySnapshot(bizDate) {
   );
   const e = await pool.query(
     `SELECT (SELECT COALESCE(SUM(amount),0) FROM cash_transactions
-              WHERE kind='expense' AND (created_at - INTERVAL '150 minutes')::date = $1)
-          + (SELECT COALESCE(SUM(amount),0) FROM expenses
-              WHERE source <> 'kassa' AND (created_at - INTERVAL '150 minutes')::date = $1) AS expenses`,
+              WHERE kind='expense' AND (created_at - INTERVAL '150 minutes')::date = $1) AS exp_kassa,
+            (SELECT COALESCE(SUM(amount),0) FROM expenses
+              WHERE source <> 'kassa' AND (created_at - INTERVAL '150 minutes')::date = $1) AS exp_other,
+            (SELECT COALESCE(SUM(amount),0) FROM cash_transactions
+              WHERE kind='income' AND source='debt' AND (created_at - INTERVAL '150 minutes')::date = $1) AS debt_collected,
+            (SELECT COALESCE(SUM(amount),0) FROM salary_payments
+              WHERE (created_at - INTERVAL '150 minutes')::date = $1) AS salary_paid,
+            (SELECT COALESCE(SUM(amount),0) FROM cash_transactions
+              WHERE kind='expense' AND source IN ('salary','advance') AND (created_at - INTERVAL '150 minutes')::date = $1) AS salary_kassa`,
     [bizDate]
   );
   const sales = parseFloat(s.rows[0].sales);
   const received = parseFloat(s.rows[0].received);
-  const expenses = parseFloat(e.rows[0].expenses);
-  return { sales, received, expenses, profit: sales - expenses };
+  const expenses = parseFloat(e.rows[0].exp_kassa) + parseFloat(e.rows[0].exp_other);
+  // REALIZED (analitika/hisobot bilan bir xil): undirilgan qarz kirim + ish haqi ayirilgan
+  const debtCollected = parseFloat(e.rows[0].debt_collected);
+  const extraLabor = Math.max(0, parseFloat(e.rows[0].salary_paid) - parseFloat(e.rows[0].salary_kassa));
+  const realized = received + debtCollected;
+  return { sales, received, expenses, profit: realized - expenses - extraLabor };
 }
 
 // Kunni yopish. body: { biz_date?, note? }

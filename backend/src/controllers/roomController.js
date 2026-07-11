@@ -58,6 +58,14 @@ const deleteRoom = async (req, res) => {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+    // Xonada ochiq (to'lanmagan) zakazли stol bo'lsa — o'chirishни bloklaymiz.
+    const openOrd = await client.query(
+      `SELECT 1 FROM orders o JOIN tables t ON o.table_id = t.id
+       WHERE t.room_id = $1 AND o.status <> 'paid' LIMIT 1`, [id]);
+    if (openOrd.rows.length) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ message: 'Xonada ochiq zakazли stol bor — avval yoping' });
+    }
     // Zakaz tarixi bor stollar: soft-delete + xonadan uzamiz (tarix saqlanadi)
     await client.query(
       `UPDATE tables SET is_active = false, room_id = NULL
@@ -140,6 +148,11 @@ const updateTable = async (req, res) => {
 const deleteTable = async (req, res) => {
   const { id } = req.params;
   try {
+    // Ochiq (to'lanmagan) zakaz bor stolni o'chirib bo'lmaydi — aks holda hisob yo'qoladi.
+    const openOrd = await pool.query(`SELECT 1 FROM orders WHERE table_id = $1 AND status <> 'paid' LIMIT 1`, [id]);
+    if (openOrd.rows.length) {
+      return res.status(400).json({ message: 'Stolda ochiq zakaz bor — avval yoping yoki to\'lang' });
+    }
     const used = await pool.query(`SELECT 1 FROM orders WHERE table_id = $1 LIMIT 1`, [id]);
     if (used.rows.length) {
       await pool.query(`UPDATE tables SET is_active = false WHERE id = $1`, [id]);
