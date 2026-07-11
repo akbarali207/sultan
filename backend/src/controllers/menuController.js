@@ -218,6 +218,12 @@ const createMenuItem = async (req, res) => {
     if (!cleanName) { return res.status(400).json({ message: 'Taom nomi kerak' }); } // finally o'zi release qiladi (ikki marta emas)
     const image_url = req.file ? `/uploads/menu/${req.file.filename}` : null;
     const itemType = type || 'recipe';
+    // Sotiladigan taom narxi musbat bo'lishi shart (P/F sotilmaydi — narxi 0 bo'lishi mumkin).
+    // Aks holда 0/manfiy narх barcha qatlamlardан o'tib ketardi (taom 0 so'mga sotilardi).
+    const priceNum = parseFloat(price);
+    if (itemType !== 'pf' && !(priceNum > 0)) {
+      return res.status(400).json({ message: 'Taom narxi musbat bo\'lishi kerak' });
+    }
     const ingId = ingredient_id ? parseInt(ingredient_id) : null;
     const stationIds = parseStationIds(req.body);
     const primary = stationIds.length ? stationIds[0] : null;
@@ -281,6 +287,16 @@ const updateMenuItem = async (req, res) => {
     const stationProvided = req.body.station_ids !== undefined || req.body.station_id !== undefined;
 
     await client.query('BEGIN');
+    // Narх berilган bo'lsa: sotiladigan taomга musbat bo'lishi shart (P/F 0 bo'lishi mumkin).
+    if (price !== undefined && price !== null && price !== '') {
+      const priceNum = parseFloat(price);
+      const t = await client.query(`SELECT type FROM menu_items WHERE id = $1`, [id]);
+      const isPf = t.rows.length && t.rows[0].type === 'pf';
+      if (!isPf && !(priceNum > 0)) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ message: 'Taom narxi musbat bo\'lishi kerak' });
+      }
+    }
     // Bo'limlar berilgan bo'lsa station_id ni to'g'ridan-to'g'ri yozamiz (hammasi tozalansa $5=null);
     // berilmagan bo'lsa eskisini saqlaymiz (COALESCE).
     const stationExpr = stationProvided ? '$5' : 'COALESCE($5, station_id)';

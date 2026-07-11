@@ -18,7 +18,7 @@ const getPending = async (req, res) => {
        JOIN order_items oi ON oi.order_id = o.id
        JOIN menu_items mi ON oi.menu_item_id = mi.id
        LEFT JOIN menu_item_stations mis ON mis.menu_item_id = mi.id
-       LEFT JOIN print_stations ps ON COALESCE(mis.station_id, mi.station_id) = ps.id
+       LEFT JOIN print_stations ps ON COALESCE(mis.station_id, mi.station_id) = ps.id AND ps.is_active = true
        WHERE oi.printed = false
        ORDER BY o.created_at, ps.id`
     );

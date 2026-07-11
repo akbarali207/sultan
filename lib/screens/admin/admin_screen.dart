@@ -9192,9 +9192,11 @@ class _PayslipDialogState extends State<_PayslipDialog> {
     bool fromKassa = true; // pul Kassadan chiqadimi
     final isSalary = kind == 'salary';
     if (isSalary) {
-      // qoldiqni avtomatik to'ldiramiz
+      // qoldiqni avtomatik to'ldiramiz — bonus QO'SHILADI, jarima AYIRILADI
+      // (aks holda префилл net-paid bo'lib, jarima/bonusни e'tiborsiz qoldirib
+      //  ortiqcha/kam to'lardi). Formula payslip pastидаги "Qoldiq" bilan bir xil.
       final net = double.tryParse(widget.staff['net_salary']?.toString() ?? '0') ?? 0;
-      final rem = net - _paidTotal;
+      final rem = net + _bonusTotal - _finesTotal - _paidTotal;
       if (rem > 0) amtCtrl.text = rem.toStringAsFixed(0);
     }
     final ok = await showDialog<bool>(

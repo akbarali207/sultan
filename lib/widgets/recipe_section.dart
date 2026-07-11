@@ -466,6 +466,7 @@ class _RecipeEditorPageState extends State<RecipeEditorPage> {
       totC += _cost(r);
     }
     final batchKg = _batchYieldKg(); // ТТК partiya chiqishi (kg) yoki null
+    final isPf = widget.menuItem['type']?.toString() == 'pf'; // P/F uchun chiqish MAJBURIY
     return Scaffold(
       backgroundColor: AppTheme.bg,
       appBar: AppBar(
@@ -595,6 +596,25 @@ class _RecipeEditorPageState extends State<RecipeEditorPage> {
                             const SizedBox(width: 8),
                             Text('${(totC / batchKg).toStringAsFixed(0)} ${tr('so\'m')}/кг',
                                 style: TextStyle(color: AppTheme.accent, fontWeight: FontWeight.bold, fontSize: 13)),
+                          ]),
+                        ),
+                      )
+                    // P/F, lekin CHIQISH hali kiritilmagan — ogohlantirish + kiritish tugmasi.
+                    // (Aks holda tannarx/кг = jami tannarx bo'lib qoladi — partiya uchun noto'g'ri.)
+                    else if (isPf)
+                      InkWell(
+                        onTap: _editYield,
+                        child: Container(
+                          color: Colors.orange.withValues(alpha: 0.12),
+                          padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 10),
+                          child: Row(children: [
+                            Icon(Icons.warning_amber_rounded, size: 18, color: Colors.orange.shade800),
+                            const SizedBox(width: 6),
+                            Expanded(
+                              child: Text(tr('Chiqish (partiya) kiritilmagan — tannarx/кг noto\'g\'ri. Kiritish uchun bosing.'),
+                                  style: TextStyle(color: Colors.orange.shade800, fontWeight: FontWeight.w600, fontSize: 12)),
+                            ),
+                            Icon(Icons.edit, size: 15, color: Colors.orange.shade800),
                           ]),
                         ),
                       ),
