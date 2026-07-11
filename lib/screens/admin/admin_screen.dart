@@ -6021,15 +6021,20 @@ class _ReportSectionState extends State<ReportSection> {
         if (list.isEmpty) rows.add(empty());
         break;
       case 'profit':
-        // Foyda = Savdo (qarz ham daromad) - Harajat. Kassaga tushgan pul ALOHIDA ko'rsatiladi.
+        // Sof foyda = REALIZED: kassaga tushgan (karta+naqd) + undirilgan qarz − harajat − ish haqi (kassadan tashqari).
+        // To'lanmagan qarz foydaga KIRMAYDI (egasi tasdig'i).
         title = tr('Sof foyda'); headerColor = Colors.green; headerValue = '${_money(n(d['profit']))} ${tr('so\'m')}';
-        rows.add(row(tr('Savdo (qarz bilan)'), _money(n(d['sales'])), rc: AppTheme.accent));
-        rows.add(row(tr('Harajat'), '-${_money(n(d['expenses']))}', rc: Colors.red));
-        rows.add(row(tr('Sof foyda'), _money(n(d['profit'])), rc: Colors.green));
-        rows.add(_detailSub(tr('Kassa / debitorka')));
         rows.add(row(tr('Kassaga tushdi (karta+naqd)'), _money(n(d['received'])), rc: Colors.blue));
-        rows.add(row(tr('Qarz (kassaga tushmadi)'), _money(n(pay['debt'])), rc: Colors.deepOrange));
+        rows.add(row(tr('Qarz undirildi'), '+${_money(n(d['debt_collected']))}', rc: Colors.green));
+        rows.add(row(tr('Realizatsiya'), _money(n(d['realized'])), rc: AppTheme.accent));
+        rows.add(row(tr('Harajat'), '-${_money(n(d['expenses']))}', rc: Colors.red));
+        if (n(d['extra_labor']) > 0) {
+          rows.add(row(tr('Ish haqi (kassadan tashqari)'), '-${_money(n(d['extra_labor']))}', rc: Colors.red));
+        }
+        rows.add(row(tr('Sof foyda'), _money(n(d['profit'])), rc: Colors.green));
         rows.add(_detailSub(tr('Ma\'lumot uchun')));
+        rows.add(row(tr('Savdo (qarz bilan)'), _money(n(d['sales'])), rc: AppTheme.textSoft));
+        rows.add(row(tr('Ochiq qarz (kassaga tushmadi)'), _money(n(pay['debt'])), rc: Colors.deepOrange));
         rows.add(row(tr('Tannarx (COGS)'), _money(n(d['cogs'])), rc: Colors.orange));
         rows.add(row(tr('Valovaya foyda (savdo-COGS)'), _money(n(d['gross_profit'])), rc: Colors.teal));
         break;
@@ -6161,7 +6166,11 @@ class _ReportSectionState extends State<ReportSection> {
         kv(tr('Savdo'), '${_money(n(d['sales']))} ${tr('so\'m')}'),
         kv(tr('Tannarx (COGS)'), '${_money(n(d['cogs']))} ${tr('so\'m')}'),
         kv(tr('Valovaya foyda'), '${_money(n(d['gross_profit']))} ${tr('so\'m')}'),
+        // Sof foyda = REALIZED: kassaga tushgan + undirilgan qarz − harajat − ish haqi
+        kv(tr('Kassaga tushdi (karta+naqd)'), '${_money(n(d['received']))} ${tr('so\'m')}'),
+        kv(tr('Qarz undirildi'), '${_money(n(d['debt_collected']))} ${tr('so\'m')}'),
         kv(tr('Harajat'), '${_money(n(d['expenses']))} ${tr('so\'m')}'),
+        if (n(d['extra_labor']) > 0) kv(tr('Ish haqi (kassadan tashqari)'), '${_money(n(d['extra_labor']))} ${tr('so\'m')}'),
         kv(tr('Sof foyda'), '${_money(n(d['profit']))} ${tr('so\'m')}'),
         pw.Divider(color: PdfColors.grey400),
         kv(tr('Karta'), '${_money(n(pay['card']))} ${tr('so\'m')}'),

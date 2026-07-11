@@ -126,7 +126,7 @@ const getDashboard = async (req, res) => {
         ? `${bd(col)} >= date_trunc('month', NOW() - INTERVAL '150 minutes')::date`
         : `${bd(col)} = ${anchor}`;
 
-    const [sales, expenses, tables, staff, present, low, top, waiters, byDay, byHour, byStation] = await Promise.all([
+    const [sales, expenses, tables, staff, present, low, top, waiters, byDay, byHour, byStation, debtPaidAgg, salaryPaidAgg, salaryKassaAgg] = await Promise.all([
       pool.query(`SELECT COUNT(*)::int AS orders, COALESCE(SUM(COALESCE(final_amount, total_amount)),0) AS sales,
                     COALESCE(SUM(paid_card),0) + COALESCE(SUM(paid_cash),0)
                     + COALESCE(SUM(CASE WHEN (COALESCE(paid_card,0)+COALESCE(paid_cash,0)+COALESCE(paid_debt,0)) = 0
@@ -161,6 +161,10 @@ const getDashboard = async (req, res) => {
                   LEFT JOIN print_stations ps ON m.station_id=ps.id
                   WHERE o.status='paid' AND ${rng('o.created_at')}
                   GROUP BY ps.name ORDER BY sales DESC`),
+      // REALIZED foyda uchun (analitika/hisobot bilan bir xil)
+      pool.query(`SELECT COALESCE(SUM(amount),0) AS total FROM cash_transactions WHERE kind='income' AND source='debt' AND ${rng('created_at')}`),
+      pool.query(`SELECT COALESCE(SUM(amount),0) AS total FROM salary_payments WHERE ${rng('created_at')}`),
+      pool.query(`SELECT COALESCE(SUM(amount),0) AS total FROM cash_transactions WHERE kind='expense' AND source IN ('salary','advance') AND ${rng('created_at')}`),
     ]);
 
     const totalSales = parseFloat(sales.rows[0].sales);
@@ -168,17 +172,28 @@ const getDashboard = async (req, res) => {
     const totalOrders = sales.rows[0].orders;
     const totalExpenses = parseFloat(expenses.rows[0].expenses);
     const cogs = await cogsForOrders(`o.status='paid' AND ${rng('o.created_at')}`);
+    // SOF FOYDA = REALIZED (egasi tasdig'i 2026-07-11): qarz FAQAT to'langanda + ish haqi ayirilgan
+    const debtCollected = parseFloat(debtPaidAgg.rows[0].total);
+    const salaryPaid = parseFloat(salaryPaidAgg.rows[0].total);
+    const salaryKassa = parseFloat(salaryKassaAgg.rows[0].total);
+    const extraLabor = Math.max(0, salaryPaid - salaryKassa);
+    const realized = totalReceived + debtCollected;
+    const profit = realized - totalExpenses - extraLabor;
 
     res.json({
       period,
       date: dateStr,
       sales: totalSales,
       received: totalReceived,
+      realized,
+      debt_collected: debtCollected,
+      salary_paid: salaryPaid,
+      extra_labor: extraLabor,
       orders: totalOrders,
       expenses: totalExpenses,
       cogs: cogs,
       gross_profit: totalSales - cogs,
-      profit: totalSales - totalExpenses,
+      profit,
       avg_check: totalOrders > 0 ? Math.round(totalSales / totalOrders) : 0,
       tables: tables.rows[0],
       staff: { present: present.rows[0].present, total: staff.rows[0].total },
@@ -1255,7 +1270,7 @@ const getReport = async (req, res) => {
   try {
     const { from_s, to_excl_s, to_incl_s, period } = await resolveRange(req.query);
 
-    const [sales, pays, exp, top, waiters, byDay, expList, debtorRows, discRows, orderRows, catDishes, expKassaAgg, expOtherAgg] = await Promise.all([
+    const [sales, pays, exp, top, waiters, byDay, expList, debtorRows, discRows, orderRows, catDishes, expKassaAgg, expOtherAgg, debtPaidAgg, salaryPaidAgg, salaryKassaAgg] = await Promise.all([
       pool.query(
         `SELECT COUNT(*)::int AS orders, COALESCE(SUM(COALESCE(final_amount, total_amount)),0) AS sales
          FROM orders WHERE status='paid' AND created_at >= $1 AND created_at < $2`, [from_s, to_excl_s]),
@@ -1349,6 +1364,13 @@ const getReport = async (req, res) => {
       pool.query(
         `SELECT COALESCE(SUM(amount),0) AS total FROM expenses
          WHERE source <> 'kassa' AND created_at >= $1 AND created_at < $2`, [from_s, to_excl_s]),
+      // REALIZED foyda uchun (analitika bilan bir xil): undirilgan qarz + ish haqi (kassadan tashqari qismi)
+      pool.query(`SELECT COALESCE(SUM(amount),0) AS total FROM cash_transactions
+                  WHERE kind='income' AND source='debt' AND created_at >= $1 AND created_at < $2`, [from_s, to_excl_s]),
+      pool.query(`SELECT COALESCE(SUM(amount),0) AS total FROM salary_payments
+                  WHERE created_at >= $1 AND created_at < $2`, [from_s, to_excl_s]),
+      pool.query(`SELECT COALESCE(SUM(amount),0) AS total FROM cash_transactions
+                  WHERE kind='expense' AND source IN ('salary','advance') AND created_at >= $1 AND created_at < $2`, [from_s, to_excl_s]),
     ]);
 
     const salesTotal = parseFloat(sales.rows[0].sales);
@@ -1377,20 +1399,31 @@ const getReport = async (req, res) => {
     const cogs = await cogsForOrders(
       `o.status='paid' AND o.created_at >= $1 AND o.created_at < $2`, [from_s, to_excl_s]);
 
-    // Foyda = SAVDO (qarz ham daromad) - harajat. Qarz FOYDAGA kiradi (topilgan pul),
-    // lekin KASSAGA tushmaydi — shuning uchun "received" (kassaga tushgan) alohida ko'rsatiladi.
+    // SOF FOYDA = REALIZED (analitika bilan bir xil, egasi tasdig'i 2026-07-11):
+    // qarz foydaga FAQAT to'langanда kiradi; ish haqi to'liq ayiriladi (kassa qismi
+    // expenses'da bor, qolgan qism extraLabor). To'lanmagan qarz foydani oshirmaydi.
     const received = parseFloat(p.card) + parseFloat(p.cash);
+    const debtCollected = parseFloat(debtPaidAgg.rows[0].total);
+    const salaryPaid = parseFloat(salaryPaidAgg.rows[0].total);
+    const salaryKassa = parseFloat(salaryKassaAgg.rows[0].total);
+    const extraLabor = Math.max(0, salaryPaid - salaryKassa);
+    const realized = received + debtCollected;
+    const profit = realized - expenses - extraLabor;
 
     res.json({
       period, from: from_s, to: to_incl_s,
       sales: salesTotal,
       received,
+      realized,
+      debt_collected: debtCollected,
+      salary_paid: salaryPaid,
+      extra_labor: extraLabor,
       orders_count: ordersCount,
       avg_check: ordersCount > 0 ? Math.round(salesTotal / ordersCount) : 0,
       expenses,
       cogs,
       gross_profit: salesTotal - cogs,
-      profit: salesTotal - expenses,
+      profit,
       payments: { card: parseFloat(p.card), cash: parseFloat(p.cash), debt: parseFloat(p.debt) },
       discount_total: parseFloat(p.discount),
       top_items: top.rows,
