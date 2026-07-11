@@ -1,6 +1,12 @@
 const pool = require('../config/db');
 const { emit } = require('../services/eventBus');
 
+// Zakazlar ustidan to'liq huquq — kassir/admin/nazoratchi/egasi.
+// MUHIM: oldin tekshiruvlar "role === 'waiter'" (qora ro'yxat) edi — bu chef/cleaner
+// (jonli bazada 5 ta parolli chef!) ga zakazlarni o'chirish/bekor/ko'chirishga
+// yo'l ochardi. Endi OQ ro'yxat: faqat quyidagilar boshqaradi.
+const canManageOrders = (u) => !!u && ['cashier', 'admin', 'director', 'guest'].includes(u.role);
+
 // Barcha stollar
 const getTables = async (req, res) => {
   try {
@@ -359,7 +365,7 @@ const queueCancelTickets = async (client, orderId, onlyItemId = null, overrideQt
 // qarz va sklad ham qaytariladi — hisobot/kassa to'g'ri qolishi uchun.
 const deleteOrder = async (req, res) => {
   const { id } = req.params;
-  if (req.user && req.user.role === 'waiter') {
+  if (!canManageOrders(req.user)) {
     return res.status(403).json({ message: 'Ruxsat yo\'q' });
   }
   const client = await pool.connect();
@@ -415,7 +421,14 @@ const deleteOrder = async (req, res) => {
     await client.query(`DELETE FROM order_items WHERE order_id = $1`, [id]);
     await client.query(`DELETE FROM orders WHERE id = $1`, [id]);
     if (order.table_id) {
-      await client.query(`UPDATE tables SET status = 'free' WHERE id = $1`, [order.table_id]);
+      // Stolni faqat shu stolда BOSHQA ochiq zakaz bo'lmasa bo'shatamiz.
+      // (To'langan zakaz o'chirilса-yu, stolда yangi mehmonlar ochiq zakaz bilan
+      //  o'tirган bo'lsa — stol qizil qolishi kerak, aks holда boshqa ofitsant
+      //  ustidan zakaz ochib qo'yadi.)
+      await client.query(
+        `UPDATE tables SET status = 'free' WHERE id = $1
+           AND NOT EXISTS (SELECT 1 FROM orders WHERE table_id = $1 AND status <> 'paid')`,
+        [order.table_id]);
     }
     await client.query('COMMIT');
     emit('orders', id);
@@ -435,7 +448,7 @@ const deleteOrder = async (req, res) => {
 // Jami summa qayta hisoblanadi; oxirgi taom bo'lsa — zakaz o'chib, stol bo'shaydi.
 const cancelOrderItem = async (req, res) => {
   const { orderId, itemId } = req.params;
-  if (req.user && req.user.role === 'waiter') {
+  if (!canManageOrders(req.user)) {
     return res.status(403).json({ message: 'Ruxsat yo\'q' });
   }
   const client = await pool.connect();
@@ -657,6 +670,10 @@ const updateOrderStatus = async (req, res) => {
 // Aktiv zakazда = "Hisob" (счёт, to'lovsiz); tugallangan zakazда = chekni qayta chiqarish.
 const printBill = async (req, res) => {
   const { id } = req.params;
+  // Hisob/chek chiqarish — ofitsant yoki kassir/admin; chef/cleaner emas.
+  if (!(canManageOrders(req.user) || (req.user && req.user.role === 'waiter'))) {
+    return res.status(403).json({ message: 'Ruxsat yo\'q' });
+  }
   try {
     const r = await pool.query(
       `UPDATE orders SET bill_requested = true WHERE id = $1 RETURNING id`,
@@ -686,8 +703,9 @@ const moveOrder = async (req, res) => {
     if (!cur.rows.length) { await client.query('ROLLBACK'); return res.status(404).json({ message: 'Zakaz topilmadi' }); }
     const order = cur.rows[0];
     if (order.status === 'paid') { await client.query('ROLLBACK'); return res.status(400).json({ message: 'To\'langan zakazni ko\'chirib bo\'lmaydi' }); }
-    // Ofitsant faqat O'Z zakazini ko'chiradi
-    if (req.user && req.user.role === 'waiter' && order.waiter_id !== req.user.id) {
+    // Ofitsant faqat O'Z zakazini ko'chiradi; kassir/admin — istalganini;
+    // boshqa rollar (chef/cleaner) — umuman yo'q.
+    if (!(canManageOrders(req.user) || (req.user && req.user.role === 'waiter' && order.waiter_id === req.user.id))) {
       await client.query('ROLLBACK'); return res.status(403).json({ message: 'Ruxsat yo\'q' });
     }
     const sourceTableId = order.table_id;
@@ -758,7 +776,7 @@ const moveOrderItems = async (req, res) => {
     if (!cur.rows.length) { await client.query('ROLLBACK'); return res.status(404).json({ message: 'Zakaz topilmadi' }); }
     const order = cur.rows[0];
     if (order.status === 'paid') { await client.query('ROLLBACK'); return res.status(400).json({ message: 'To\'langan zakazni ko\'chirib bo\'lmaydi' }); }
-    if (req.user && req.user.role === 'waiter' && order.waiter_id !== req.user.id) {
+    if (!(canManageOrders(req.user) || (req.user && req.user.role === 'waiter' && order.waiter_id === req.user.id))) {
       await client.query('ROLLBACK'); return res.status(403).json({ message: 'Ruxsat yo\'q' });
     }
     const sourceTableId = order.table_id;

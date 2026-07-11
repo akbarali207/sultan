@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const auth = require('../middleware/authMiddleware');
+const { requireRole } = require('../middleware/roleMiddleware');
 const {
   getTables, createTable,
   createOrder, getOrders, getOrderItems,
@@ -8,7 +9,9 @@ const {
 } = require('../controllers/orderController');
 
 router.get('/tables', auth, getTables);
-router.post('/tables', auth, createTable);
+// Stol yaratish — faqat admin (POST /rooms/tables bilan bir xil huquq).
+// Ilgari rolsiz edi: istalgan ofitsant/chef room_id'siz "ko'rinmas" stollar yasashi mumkin edi.
+router.post('/tables', auth, requireRole('admin', 'director', 'guest'), createTable);
 
 router.get('/', auth, getOrders);
 router.post('/', auth, createOrder);
