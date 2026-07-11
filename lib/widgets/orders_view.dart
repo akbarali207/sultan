@@ -288,8 +288,12 @@ class _OrdersViewState extends State<OrdersView> {
     // chosen == total -> butun taom (qty parametrsiz); aks holda qisman (?qty=N)
     final full = chosen >= total;
     final url = '${AppConstants.orders}/$orderId/items/$itemId${full ? '' : '?qty=$chosen'}';
+    // Ikki marta bosishdan himoya: qisman bekor (?qty=N) idempotent EMAS edi —
+    // sekin tarmoqда takror bosilса 2×N chegirilardi (mehmon hisobi 2 baravar kamayardi).
+    if (_mutating) return;
+    setState(() => _mutating = true);
     try {
-      final res = await ApiService.delete(url);
+      final res = await ApiService.delete(url, idempotencyKey: ApiService.newIdempotencyKey());
       if (res is Map && res['ok'] != true && res['message'] != null) {
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
@@ -303,6 +307,8 @@ class _OrdersViewState extends State<OrdersView> {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('${tr('Xato')}: $e'), backgroundColor: Colors.red));
       }
+    } finally {
+      if (mounted) setState(() => _mutating = false);
     }
   }
 

@@ -651,6 +651,12 @@ class _CashboxViewState extends State<CashboxView> {
       pending = r is List ? r : [];
     } catch (_) {}
     if (!mounted) return;
+    // Yopiladigan biznes-kun — default JORIY biznes-kun (tun-yarim o'tsa ham
+    // 02:30 gacha oldingi kun). Kech qolган kassir kechagi kunni tanlab yopa oladi.
+    DateTime bizToday = DateTime.now().subtract(const Duration(hours: 2, minutes: 30));
+    DateTime selDate = DateTime(bizToday.year, bizToday.month, bizToday.day);
+    String d2(int n) => n.toString().padLeft(2, '0');
+    String fmt(DateTime d) => '${d.year}-${d2(d.month)}-${d2(d.day)}';
     await showDialog(
       context: context,
       builder: (_) => StatefulBuilder(
@@ -661,18 +667,43 @@ class _CashboxViewState extends State<CashboxView> {
             width: 360,
             child: SingleChildScrollView(
               child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
-                Text(tr('Bugungi kunni yopish (Z-hisobot). Vaqtida (02:30 gача) yopilmasa — direktor tasdig\'i kerak.'),
+                Text(tr('Kunni yopish (Z-hisobot). Vaqtida (02:30 gача) yopilmasa — direktor tasdig\'i kerak.'),
                     style: TextStyle(color: AppTheme.textSoft, fontSize: 13)),
+                const SizedBox(height: 12),
+                // Yopiladigan kunni tanlash (kech qolганда kechagi kun)
+                InkWell(
+                  onTap: () async {
+                    final picked = await showDatePicker(
+                      context: ctx,
+                      initialDate: selDate,
+                      firstDate: DateTime(2024, 1, 1),
+                      lastDate: DateTime(bizToday.year, bizToday.month, bizToday.day),
+                    );
+                    if (picked != null) setSt(() => selDate = picked);
+                  },
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                    decoration: BoxDecoration(
+                        border: Border.all(color: AppTheme.textSoft.withValues(alpha: 0.4)),
+                        borderRadius: BorderRadius.circular(8)),
+                    child: Row(children: [
+                      Icon(Icons.calendar_today, size: 16, color: AppTheme.textSoft),
+                      const SizedBox(width: 8),
+                      Text('${tr('Kun')}: ${fmt(selDate)}',
+                          style: TextStyle(color: AppTheme.text, fontSize: 13, fontWeight: FontWeight.w600)),
+                    ]),
+                  ),
+                ),
                 const SizedBox(height: 12),
                 SizedBox(
                   width: double.infinity,
                   child: ElevatedButton.icon(
                     style: ElevatedButton.styleFrom(backgroundColor: AppTheme.accent),
                     icon: const Icon(Icons.event_available, color: Colors.white),
-                    label: Text(tr('Bugungi kunni yopish'), style: const TextStyle(color: Colors.white)),
+                    label: Text(tr('Kunni yopish'), style: const TextStyle(color: Colors.white)),
                     onPressed: () async {
                       try {
-                        final res = await ApiService.post('/reports/close-day', {},
+                        final res = await ApiService.post('/reports/close-day', {'biz_date': fmt(selDate)},
                             idempotencyKey: ApiService.newIdempotencyKey());
                         if (!ctx.mounted) return;
                         final st = res is Map ? res['status']?.toString() : null;
@@ -715,16 +746,30 @@ class _CashboxViewState extends State<CashboxView> {
                             icon: const Icon(Icons.check_circle, color: Colors.green),
                             tooltip: tr('Tasdiqlash'),
                             onPressed: () async {
-                              await ApiService.post('/reports/day-closes/${p['id']}/approve', {'approve': true});
-                              setSt(() => pending.remove(p));
+                              try {
+                                await ApiService.post('/reports/day-closes/${p['id']}/approve', {'approve': true});
+                                setSt(() => pending.remove(p));
+                              } catch (e) {
+                                if (ctx.mounted) {
+                                  ScaffoldMessenger.of(ctx).showSnackBar(SnackBar(
+                                      content: Text('${tr('Xato')}: $e'), backgroundColor: Colors.red));
+                                }
+                              }
                             },
                           ),
                           IconButton(
                             icon: const Icon(Icons.cancel, color: Colors.red),
                             tooltip: tr('Rad etish'),
                             onPressed: () async {
-                              await ApiService.post('/reports/day-closes/${p['id']}/approve', {'approve': false});
-                              setSt(() => pending.remove(p));
+                              try {
+                                await ApiService.post('/reports/day-closes/${p['id']}/approve', {'approve': false});
+                                setSt(() => pending.remove(p));
+                              } catch (e) {
+                                if (ctx.mounted) {
+                                  ScaffoldMessenger.of(ctx).showSnackBar(SnackBar(
+                                      content: Text('${tr('Xato')}: $e'), backgroundColor: Colors.red));
+                                }
+                              }
                             },
                           ),
                         ]),
@@ -1286,10 +1331,23 @@ class _CashboxViewState extends State<CashboxView> {
     setState(() => _busy = true);
     try {
       // Idempotency-Key — qarz to'lovi retry'da ikki marta o'tmasligi uchun
-      await ApiService.post('${AppConstants.debts}/${d['id']}/pay', {'amount': amt, 'method': method},
+      final res = await ApiService.post('${AppConstants.debts}/${d['id']}/pay', {'amount': amt, 'method': method},
           idempotencyKey: ApiService.newIdempotencyKey());
+      // 4xx (qarz allaqachon to'langan, xato summa) da xato TASHLANMAYDI — {message} qaytadi.
+      if (res is Map && res['paid'] == null && res['message'] != null && res['message'] != 'ok') {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text(res['message'].toString()), backgroundColor: Colors.red));
+        }
+        return;
+      }
       await _load();
-    } catch (_) {} finally {
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('${tr('Xato')}: $e'), backgroundColor: Colors.red));
+      }
+    } finally {
       if (mounted) setState(() => _busy = false);
     }
   }
@@ -1353,14 +1411,26 @@ class _CashboxViewState extends State<CashboxView> {
     setState(() => _busy = true);
     try {
       // Idempotency-Key — kirim/chiqim retry'da ikki marta yozilmasligi uchun
-      await ApiService.post(AppConstants.cashbox, {
+      final res = await ApiService.post(AppConstants.cashbox, {
         'kind': kind,
         'method': method,
         'amount': amt,
         'note': noteCtrl.text.trim().isEmpty ? null : noteCtrl.text.trim(),
       }, idempotencyKey: ApiService.newIdempotencyKey());
+      if (res is Map && res['id'] == null && res['message'] != null) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text(res['message'].toString()), backgroundColor: Colors.red));
+        }
+        return;
+      }
       await _load();
-    } catch (_) {} finally {
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('${tr('Xato')}: $e'), backgroundColor: Colors.red));
+      }
+    } finally {
       if (mounted) setState(() => _busy = false);
     }
   }

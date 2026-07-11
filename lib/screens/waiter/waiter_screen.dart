@@ -473,12 +473,28 @@ class _WaiterScreenState extends State<WaiterScreen> {
       }).toList();
 
       // Idempotency-Key — tarmoq uzilib retry bo'lsa ham zakaz ikki marta yaratilmaydi
-      await ApiService.post(AppConstants.orders, {
+      final res = await ApiService.post(AppConstants.orders, {
         'table_id': tableId,
         'waiter_id': userId,
         'items': cartItems,
         'notes': note,
       }, idempotencyKey: ApiService.newIdempotencyKey());
+
+      // MUHIM: 4xx/423 (stop-list, kunlik limit, STOP-freeze, 409 "kuting") da
+      // ApiService xato TASHLAMAYDI — {message} qaytaradi (id yo'q). Agar javobda
+      // id bo'lmasa — zakaz OCHILMADI: savatni TOZALAMAYMIZ, qizil ogohlantirish.
+      final ok = res is Map && res['id'] != null;
+      if (!ok) {
+        final msg = (res is Map && res['message'] != null)
+            ? res['message'].toString()
+            : tr('Zakaz yuborilmadi — qayta urinib ko\'ring');
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text(msg), backgroundColor: Colors.red),
+          );
+        }
+        return; // savat saqlanadi — ofitsant tuzatib qayta yuboradi
+      }
 
       // Savat va tanlangan stolni tozalab, STOLLAR ga qaytamiz
       setState(() {
