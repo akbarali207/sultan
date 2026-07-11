@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const authMiddleware = require('../middleware/authMiddleware');
 const { requireRole } = require('../middleware/roleMiddleware');
+const blockIfFrozen = require('../middleware/freezeGuard');
 const adminOnly = requireRole('admin', 'director', 'guest');
 const {
   getExpenseTypes,
@@ -21,7 +22,7 @@ router.delete('/types/:id', authMiddleware, adminOnly, deleteExpenseType);
 
 router.get('/outflows', authMiddleware, adminOnly, getOutflows);
 router.get('/', authMiddleware, adminOnly, getExpenses);
-router.post('/', authMiddleware, adminOnly, createExpense);
+router.post('/', authMiddleware, adminOnly, blockIfFrozen, createExpense);
 router.delete('/:id', authMiddleware, adminOnly, deleteExpense);
 
 module.exports = router;

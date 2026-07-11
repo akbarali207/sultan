@@ -115,15 +115,16 @@ class _AdminScreenState extends State<AdminScreen> {
         backgroundColor: AppTheme.card,
         title: Text(tr(_menuItems[_selectedIndex]['label']), style: TextStyle(color: AppTheme.text)),
         actions: [
-          // Kengaytirilgan analitika — FAQAT direktor (+ guest super-admin) ko'radi
-          if (auth.role == 'director' || auth.role == 'guest')
+          // Kengaytirilgan analitika (foyda/qarz) — admin ham ko'radi (egasi 2026-07-11)
+          if (auth.role == 'admin' || auth.role == 'director' || auth.role == 'guest')
             IconButton(
               tooltip: tr('Analitika'),
               icon: Icon(Icons.insights, color: AppTheme.accent),
               onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const AnalyticsPage())),
             ),
-          // Super-admin (guest) — STOP / ochish tugmasi
-          if (auth.role == 'guest')
+          // STOP / ochish tugmasi — admin/director/guest (egasi: "admin bitta tugma bilan
+          // butun ilovani to'xtata olsin"). STOP endi BARCHA pul amallarини bloklaydi.
+          if (auth.role == 'admin' || auth.role == 'director' || auth.role == 'guest')
             IconButton(
               tooltip: _frozen ? tr('Ochish') : tr('STOP'),
               icon: Icon(_frozen ? Icons.play_circle_fill : Icons.stop_circle,

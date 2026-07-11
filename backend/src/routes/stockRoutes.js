@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const authMiddleware = require('../middleware/authMiddleware');
 const { requireRole } = require('../middleware/roleMiddleware');
+const blockIfFrozen = require('../middleware/freezeGuard');
 const adminOnly = requireRole('admin', 'director', 'guest');
 const {
   getIngredients,
@@ -41,8 +42,8 @@ router.delete('/ingredient-categories/:id', authMiddleware, adminOnly, deleteIng
 
 router.get('/', authMiddleware, adminOnly, getIngredients);
 router.post('/', authMiddleware, adminOnly, createIngredient);
-router.post('/incoming', authMiddleware, adminOnly, addIncoming);
-router.post('/produce', authMiddleware, adminOnly, producePf); // P/F tayyorlash
+router.post('/incoming', authMiddleware, adminOnly, blockIfFrozen, addIncoming);
+router.post('/produce', authMiddleware, adminOnly, blockIfFrozen, producePf); // P/F tayyorlash
 router.get('/incoming', authMiddleware, adminOnly, getIncomingHistory);
 router.get('/low', authMiddleware, adminOnly, getLowStock);
 router.put('/:id/edit', authMiddleware, adminOnly, editIngredient);   // tahrirlash (sabab majburiy)

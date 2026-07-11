@@ -2,10 +2,12 @@ const express = require('express');
 const router = express.Router();
 const authMiddleware = require('../middleware/authMiddleware');
 const { requireRole } = require('../middleware/roleMiddleware');
+const blockIfFrozen = require('../middleware/freezeGuard'); // STOP — pul amallarini bloklaydi
 // director (nazorat) va guest (super-admin) ham barcha hisobot/analitikani ko'radi
 const adminOnly = requireRole('admin', 'director', 'guest');
 const adminOrCashier = requireRole('admin', 'cashier', 'director', 'guest');
-const directorOnly = requireRole('director', 'guest'); // analitika — faqat direktor (+ guest super-admin)
+// Analitika (foyda/qarz drill-down) — egasi 2026-07-11: admin ham to'liq ko'radi
+const directorOnly = requireRole('admin', 'director', 'guest');
 const { getDailyReport, getStockReport, getAttendanceReport, getDashboard, getPayroll,
         getDailyStock, setDailyStock,
         addSalaryPayment, listSalaryPayments, deleteSalaryPayment,
@@ -31,7 +33,7 @@ router.get('/payroll', authMiddleware, adminOnly, getPayroll);
 router.get('/piece-rates', authMiddleware, adminOnly, getPieceRates);  // sdelnaya stavkalar
 router.post('/piece-rates', authMiddleware, adminOnly, setPieceRates);
 router.get('/salary-payments', authMiddleware, adminOnly, listSalaryPayments);
-router.post('/salary-payments', authMiddleware, adminOnly, addSalaryPayment);
+router.post('/salary-payments', authMiddleware, adminOnly, blockIfFrozen, addSalaryPayment);
 router.delete('/salary-payments/:id', authMiddleware, adminOnly, deleteSalaryPayment);
 router.get('/salary-fines', authMiddleware, adminOnly, listSalaryFines);
 router.post('/salary-fines', authMiddleware, adminOnly, addSalaryFine);
@@ -47,10 +49,10 @@ router.delete('/manual-shifts', authMiddleware, adminOnly, deleteManualShifts);
 
 // Kassa (admin + kassir)
 router.get('/cashbox', authMiddleware, adminOrCashier, getCashbox);
-router.post('/cashbox', authMiddleware, adminOrCashier, addCashTransaction);
-router.post('/cashbox/open', authMiddleware, adminOrCashier, setOpeningBalance); // kassa ochilish qoldig'i
+router.post('/cashbox', authMiddleware, adminOrCashier, blockIfFrozen, addCashTransaction);
+router.post('/cashbox/open', authMiddleware, adminOrCashier, blockIfFrozen, setOpeningBalance); // kassa ochilish qoldig'i
 router.delete('/cashbox/:id', authMiddleware, adminOrCashier, deleteCashTransaction);
-router.post('/debts/:id/pay', authMiddleware, adminOrCashier, payDebt);
+router.post('/debts/:id/pay', authMiddleware, adminOrCashier, blockIfFrozen, payDebt);
 
 // Kun yakunlash (Z-hisobot) + kech yopishni direktor tasdiqlashi
 router.post('/close-day', authMiddleware, adminOrCashier, closeDay);        // kassir kunni yopadi
