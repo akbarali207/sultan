@@ -136,7 +136,7 @@ const getOutflows = async (req, res) => {
         : period === 'month' ? `${col} >= date_trunc('month', CURRENT_DATE)`
           : `DATE(${col}) = CURRENT_DATE`;
 
-    const [kassa, other] = await Promise.all([
+    const [kassa, other, kassaAgg] = await Promise.all([
       pool.query(
         `SELECT ct.id AS ct_id, ct.source, ct.method, ct.amount, ct.note, ct.created_at,
                 et.name AS expense_type, e.id AS expense_id, e.quantity, e.unit,
@@ -155,15 +155,20 @@ const getOutflows = async (req, res) => {
          WHERE e.source <> 'kassa' AND ${w('e.created_at')}
          ORDER BY e.created_at DESC`
       ),
+      // JAMI kassa chiqimi — AGREGAT (ro'yxat LIMIT 300 bilan kesiladi, summa to'liq bo'lsin)
+      pool.query(
+        `SELECT COALESCE(SUM(amount),0) AS total FROM cash_transactions
+         WHERE kind='expense' AND ${w('created_at')}`
+      ),
     ]);
 
     const CAT = { salary: 'Oylik', advance: 'Avans', stock: 'Sklad', manual: "Qo'lda" };
     const items = [];
-    let totalKassa = 0, totalOther = 0;
+    let totalOther = 0;
+    const totalKassa = parseFloat(kassaAgg.rows[0].total); // to'liq summa (kesilmagan)
 
     for (const r of kassa.rows) {
       const amount = parseFloat(r.amount);
-      totalKassa += amount;
       let typeName, name;
       if (r.source === 'expense') { typeName = r.expense_type || 'Boshqa'; name = r.note || ''; }
       else if (r.source === 'salary' || r.source === 'advance') { typeName = CAT[r.source]; name = r.staff_name || r.note || ''; }

@@ -355,6 +355,8 @@ const getAnalytics = async (req, res) => {
 const getAttendanceReport = async (req, res) => {
   try {
     const { date } = req.query;
+    // Yashirin egasi (guest) davomat ro'yxatida faqat guest'ga ko'rinadi.
+    const hideGuest = (!req.user || req.user.role !== 'guest') ? "AND r.name <> 'guest'" : '';
     // Sana berilmagan (default "bugun") -> JORIY BIZNES-KUN = oxirgi KASSA OCHILISHI kuni.
     // Shunda yarim tunда 0 ga o'tib ketmaydi: ertalab kassa ochilmaguncha oldingi (ochiq) kun ko'rinadi.
     // Kassa hech qachon ochilmagan bo'lsa -> 02:30 biznes-kun (zaxira).
@@ -386,7 +388,7 @@ const getAttendanceReport = async (req, res) => {
          WHERE (check_in - INTERVAL '150 minutes')::date = $1
          GROUP BY user_id
        ) a ON a.user_id = u.id
-       WHERE u.is_active = true
+       WHERE u.is_active = true ${hideGuest}
        ORDER BY r.name, u.full_name`,
       [filterDate]
     );
@@ -447,6 +449,9 @@ const getAttendanceReport = async (req, res) => {
 // Kechikish jarimasi (late_fine_per_minute) har bir davomat kuni uchun ayriladi.
 const getPayroll = async (req, res) => {
   try {
+    // Yashirin egasi (guest super-admin) ish haqi ro'yxatida faqat guest'ning o'ziga
+    // ko'rinadi (getUsers'dagi hideGuest bilan bir xil siyosat).
+    const hideGuest = (!req.user || req.user.role !== 'guest') ? "AND r.name <> 'guest'" : '';
     const period = ['today', 'week', 'month'].includes(req.query.period) ? req.query.period : 'month';
     // Faqat YYYY-MM-DD formatdagi sanani qabul qilamiz, aks holda period bo'yicha hisoblanadi
     const isDate = (s) => typeof s === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s);
@@ -488,7 +493,7 @@ const getPayroll = async (req, res) => {
                 COALESCE(u.salary_day, 1) AS salary_day,
                 COALESCE(u.salary_period_days, 30) AS salary_period_days
          FROM users u JOIN roles r ON u.role_id = r.id
-         WHERE u.is_active = true
+         WHERE u.is_active = true ${hideGuest}
          ORDER BY r.name, u.full_name`
       ),
       pool.query(
@@ -815,7 +820,7 @@ const addSalaryPayment = async (req, res) => {
 
     const r = await client.query(
       `INSERT INTO salary_payments (user_id, amount, method, kind, note, source, created_at)
-       VALUES ($1, $2, $3, $4, $5, $6, COALESCE($7::timestamp, NOW()))
+       VALUES ($1, $2, $3, $4, $5, $6, COALESCE($7::date + INTERVAL '12 hours', NOW()))
        RETURNING id, user_id, amount, method, kind, note, source, to_char(created_at,'YYYY-MM-DD') AS date`,
       [user_id, amt, method, kind, note || null, sourceText, isDate ? date : null]
     );
@@ -826,7 +831,7 @@ const addSalaryPayment = async (req, res) => {
     if (fromKassa) {
       await client.query(
         `INSERT INTO cash_transactions (kind, method, amount, source, ref_id, note, created_at)
-         VALUES ('expense', $1, $2, $3, $4, $5, COALESCE($6::timestamp, NOW()))`,
+         VALUES ('expense', $1, $2, $3, $4, $5, COALESCE($6::date + INTERVAL '12 hours', NOW()))`,
         [method, amt, kind, pay.id, kind === 'salary' ? 'Oylik' : 'Avans', isDate ? date : null]
       );
     }
@@ -891,7 +896,7 @@ const addSalaryFine = async (req, res) => {
     const isDate = typeof date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(date);
     const r = await pool.query(
       `INSERT INTO salary_fines (user_id, amount, reason, created_at)
-       VALUES ($1, $2, $3, COALESCE($4::timestamp, NOW()))
+       VALUES ($1, $2, $3, COALESCE($4::date + INTERVAL '12 hours', NOW()))
        RETURNING id, user_id, amount, reason, to_char(created_at, 'YYYY-MM-DD') AS date`,
       [user_id, amt, (reason || '').toString().trim().slice(0, 200) || null, isDate ? date : null]
     );
@@ -943,7 +948,7 @@ const addSalaryBonus = async (req, res) => {
     const isDate = typeof date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(date);
     const r = await pool.query(
       `INSERT INTO salary_bonuses (user_id, amount, percent, reason, created_at)
-       VALUES ($1, $2, $3, $4, COALESCE($5::timestamp, NOW()))
+       VALUES ($1, $2, $3, $4, COALESCE($5::date + INTERVAL '12 hours', NOW()))
        RETURNING id, user_id, amount, percent, reason, to_char(created_at, 'YYYY-MM-DD') AS date`,
       [user_id, amt, pct, (reason || '').toString().trim().slice(0, 200) || null, isDate ? date : null]
     );
@@ -1125,8 +1130,12 @@ const getCashbox = async (req, res) => {
          ORDER BY created_at DESC`),
       pool.query(`SELECT COALESCE(SUM(amount - paid_amount),0) AS outstanding, COUNT(*)::int AS cnt
                   FROM debts WHERE (amount - paid_amount) > 0.5`),
-      pool.query(`SELECT COALESCE(SUM(amount),0) AS o FROM cash_transactions
-                  WHERE source = 'opening' AND created_at >= $1 AND created_at < $2`, [from_s, to_excl_s]),
+      // Kassa ochilish qoldig'i — davr ichidagi OXIRGI opening (SUM emas!).
+      // Hafta/oy davrida har kunning opening'i ~ o'tgan kun qoldig'i, ularni QO'SHISH
+      // net.cash'ni ko'p marta shishiradi. Bir kun uchun ham bitta qiymat.
+      pool.query(`SELECT COALESCE(amount,0) AS o FROM cash_transactions
+                  WHERE source = 'opening' AND created_at >= $1 AND created_at < $2
+                  ORDER BY created_at DESC LIMIT 1`, [from_s, to_excl_s]),
     ]);
 
     const m = { income: { card: 0, cash: 0 }, expense: { card: 0, cash: 0 } };
@@ -1137,7 +1146,7 @@ const getCashbox = async (req, res) => {
     }
     const incomeTotal = m.income.card + m.income.cash;
     const expenseTotal = m.expense.card + m.expense.cash;
-    const opening = parseFloat(openingRes.rows[0].o) || 0; // kassa ochilish qoldig'i (naqd)
+    const opening = openingRes.rows.length ? (parseFloat(openingRes.rows[0].o) || 0) : 0; // kassa ochilish qoldig'i (naqd)
 
     res.json({
       period, from: from_s, to: to_incl_s,
@@ -1246,7 +1255,7 @@ const getReport = async (req, res) => {
   try {
     const { from_s, to_excl_s, to_incl_s, period } = await resolveRange(req.query);
 
-    const [sales, pays, exp, top, waiters, byDay, expList, debtorRows, discRows, orderRows, catDishes] = await Promise.all([
+    const [sales, pays, exp, top, waiters, byDay, expList, debtorRows, discRows, orderRows, catDishes, expKassaAgg, expOtherAgg] = await Promise.all([
       pool.query(
         `SELECT COUNT(*)::int AS orders, COALESCE(SUM(COALESCE(final_amount, total_amount)),0) AS sales
          FROM orders WHERE status='paid' AND created_at >= $1 AND created_at < $2`, [from_s, to_excl_s]),
@@ -1331,6 +1340,15 @@ const getReport = async (req, res) => {
          ) s ON s.menu_item_id = m.id
          WHERE m.is_active=true
          ORDER BY c.name, qty DESC, m.name`, [from_s, to_excl_s]),
+      // JAMI harajat — AGREGAT (ro'yxatdan MUSTAQIL). Ro'yxat LIMIT 300/∞ bilan
+      // kesiladi, lekin summa TO'LIQ bo'lishi shart (oy davomida 300+ chiqim bo'lsa
+      // profit shishib ketmasin).
+      pool.query(
+        `SELECT COALESCE(SUM(amount),0) AS total FROM cash_transactions
+         WHERE kind='expense' AND created_at >= $1 AND created_at < $2`, [from_s, to_excl_s]),
+      pool.query(
+        `SELECT COALESCE(SUM(amount),0) AS total FROM expenses
+         WHERE source <> 'kassa' AND created_at >= $1 AND created_at < $2`, [from_s, to_excl_s]),
     ]);
 
     const salesTotal = parseFloat(sales.rows[0].sales);
@@ -1339,11 +1357,11 @@ const getReport = async (req, res) => {
 
     // Barcha harajatlarni (Kassadan + boshqa manba) birlashtirib jami + ro'yxat tuzamiz
     const CAT = { salary: 'Oylik', advance: 'Avans', stock: 'Sklad', manual: "Qo'lda" };
-    let expenses = 0;
-    const expensesList = [];
+    // JAMI harajat — agregat so'rovlardan (LIMIT'siz), profit to'g'ri chiqishi uchun.
+    const expenses = parseFloat(expKassaAgg.rows[0].total) + parseFloat(expOtherAgg.rows[0].total);
+    const expensesList = []; // faqat ko'rsatish uchun (kesilgan ro'yxat)
     for (const r of exp.rows) { // exp endi = Kassadan ketgan chiqimlar
       const amount = parseFloat(r.amount);
-      expenses += amount;
       let typeName, name;
       if (r.source === 'expense') { typeName = r.expense_type || 'Boshqa'; name = r.note || ''; }
       else if (r.source === 'salary' || r.source === 'advance') { typeName = CAT[r.source]; name = r.staff_name || r.note || ''; }
@@ -1353,7 +1371,6 @@ const getReport = async (req, res) => {
     }
     for (const r of expList.rows) { // expList endi = Kassadan tashqari xarajatlar
       const amount = parseFloat(r.amount);
-      expenses += amount;
       expensesList.push({ type_name: r.expense_type || 'Boshqa', name: r.name || '', amount, method: r.method, source: 'expense', from_kassa: false, dt: r.dt });
     }
 
