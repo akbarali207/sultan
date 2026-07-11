@@ -88,6 +88,11 @@ const updateUser = async (req, res) => {
     if (currentRoleName === 'guest' && !isGuestCaller) {
       return res.status(403).json({ message: 'Bu xodimni tahrirlash uchun ruxsat yo\'q!' });
     }
+    // Direktor akkаuntini faqat guest yoki direktor tahrirlaydi (admin uni pasaytira/o'chira olmasin).
+    // Ilgari faqat YANGI rol tekshirilardi — admin direktorni waiter'ga tushirib yubora olardi.
+    if (currentRoleName === 'director' && !(isGuestCaller || (req.user && req.user.role === 'director'))) {
+      return res.status(403).json({ message: 'Direktor akkauntini tahrirlash uchun ruxsat yo\'q!' });
+    }
 
     // Yangi rol tayinlanayotgan bo'lsa: guest'ni faqat guest, director'ni guest yoki director
     if (role_id !== undefined && role_id !== null) {
@@ -161,6 +166,10 @@ const deleteUser = async (req, res) => {
     const currentRoleName = currentRole.rows[0] && currentRole.rows[0].name;
     if (currentRoleName === 'guest' && !(req.user && req.user.role === 'guest')) {
       return res.status(403).json({ message: 'Bu xodimni o\'chirish uchun ruxsat yo\'q!' });
+    }
+    // Direktorni faqat guest yoki direktor o'chira oladi (admin emas).
+    if (currentRoleName === 'director' && !(req.user && (req.user.role === 'guest' || req.user.role === 'director'))) {
+      return res.status(403).json({ message: 'Direktor akkauntini o\'chirish uchun ruxsat yo\'q!' });
     }
 
     await pool.query(`UPDATE users SET is_active = false WHERE id = $1`, [id]);

@@ -59,7 +59,20 @@ const addIncoming = async (req, res) => {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-    const { ingredient_id, quantity, price_per_unit, selling_price, note } = req.body;
+    const { ingredient_id, selling_price, note } = req.body;
+    const quantity = parseFloat(req.body.quantity);
+    const price_per_unit = parseFloat(req.body.price_per_unit);
+    // KIRIM validatsiyasi: miqdor musbat, narx manfiy emas. Aks holda o'rtacha-vaznli
+    // tannarx buziladi va kassa chiqimi noto'g'ri bo'ladi. (Manfiy sklad qoldig'i
+    // ATAYLAB — bu haqda kirim emas, sotuv/produce javob beradi.)
+    if (!(quantity > 0)) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ message: 'Kirim miqdori musbat bo\'lishi kerak' });
+    }
+    if (!(price_per_unit >= 0) || isNaN(price_per_unit)) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ message: 'Kirim narxi noto\'g\'ri' });
+    }
     const total_amount = quantity * price_per_unit;
     const method = req.body.method === 'card' ? 'card' : 'cash';
     // Pul manbasi: Kassadan (default) yoki boshqa joydan. Boshqa bo'lsa Kassadan yechilmaydi.

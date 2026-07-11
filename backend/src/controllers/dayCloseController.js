@@ -48,9 +48,20 @@ const closeDay = async (req, res) => {
     const isLate = meta.rows[0].is_late === true;
     const bizDateStr = meta.rows[0].biz_date_str;
 
-    const ex = await pool.query('SELECT status FROM day_close WHERE biz_date = $1', [bizDate]);
+    // Kelajakdagi kunni yopib bo'lmaydi (biz_date joriy biznes-kundan katta bo'lsa).
+    const fut = await pool.query(`SELECT $1::date > (NOW() - INTERVAL '150 minutes')::date AS future`, [bizDate]);
+    if (fut.rows[0].future === true) {
+      return res.status(400).json({ message: 'Kelajakdagi kunni yopib bo\'lmaydi' });
+    }
+
+    const ex = await pool.query('SELECT id, status FROM day_close WHERE biz_date = $1', [bizDate]);
     if (ex.rows.length) {
-      return res.status(409).json({ message: 'Bu kun allaqachon yopilgan yoki yuborilgan', status: ex.rows[0].status });
+      // RAD ETILGAN yopishni qayta yopish mumkin (aks holда kun abadiy tupikда qolardi).
+      if (ex.rows[0].status === 'rejected') {
+        await pool.query('DELETE FROM day_close WHERE id = $1', [ex.rows[0].id]);
+      } else {
+        return res.status(409).json({ message: 'Bu kun allaqachon yopilgan yoki yuborilgan', status: ex.rows[0].status });
+      }
     }
 
     const snap = await daySnapshot(bizDate);
