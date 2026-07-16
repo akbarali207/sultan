@@ -8,7 +8,7 @@ const adminOnly = requireRole('admin', 'director', 'guest');
 const adminOrCashier = requireRole('admin', 'cashier', 'director', 'guest');
 // Analitika (foyda/qarz drill-down) — egasi 2026-07-11: admin ham to'liq ko'radi
 const directorOnly = requireRole('admin', 'director', 'guest');
-const { getDailyReport, getStockReport, getAttendanceReport, getDashboard, getPayroll,
+const { getDailyReport, getStockReport, getAttendanceReport, getDashboard, getPayroll, getPayrollPeriods,
         getDailyStock, setDailyStock,
         addSalaryPayment, listSalaryPayments, deleteSalaryPayment,
         addSalaryFine, listSalaryFines, deleteSalaryFine,
@@ -26,10 +26,13 @@ router.post('/daily-stock', authMiddleware, adminOnly, setDailyStock);  // ertal
 router.get('/daily', authMiddleware, adminOnly, getDailyReport);
 router.get('/stock', authMiddleware, adminOnly, getStockReport);
 router.get('/attendance', authMiddleware, adminOnly, getAttendanceReport);
+router.get('/attendance-history', authMiddleware, adminOnly, require('../controllers/reportController').getAttendanceHistory);
 router.get('/summary', authMiddleware, adminOnly, getReport);
 router.get('/analytics', authMiddleware, directorOnly, getAnalytics); // analitika — faqat direktor/guest
+router.get('/audit', authMiddleware, adminOnly, require('../controllers/stockIntelController').getAuditLog); // audit-jurnal (F16)
 router.get('/dish/:id', authMiddleware, directorOnly, getDishDetail); // bitta blyudo drill-down
 router.get('/payroll', authMiddleware, adminOnly, getPayroll);
+router.get('/payroll/periods', authMiddleware, adminOnly, getPayrollPeriods); // davrlar tarixi (bitta xodim)
 router.get('/piece-rates', authMiddleware, adminOnly, getPieceRates);  // sdelnaya stavkalar
 router.post('/piece-rates', authMiddleware, adminOnly, setPieceRates);
 router.get('/salary-payments', authMiddleware, adminOnly, listSalaryPayments);

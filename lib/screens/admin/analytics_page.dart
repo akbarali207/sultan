@@ -186,10 +186,14 @@ class _AnalyticsPageState extends State<AnalyticsPage> {
     final debt = Map<String, dynamic>.from(d['debt'] ?? {});
     final lossDishes = byDish.where((e) => _n(e['profit']) < 0).toList();
     final received = _n(s['received']);
-    final expenses = _n(s['expenses']);
     final salaryPaid = _n(s['salary_paid']); // davrда berilgan oylik+avans
     final bonuses = _n(s['bonuses']);          // davrда berilgan bonuslar
     final debtCollected = _n(s['debt_collected']); // davrда undirilgan qarz (foydaga qo'shildi)
+    // COGS-modeli sof foyda tarkibi
+    final cogs = _n(s['cogs']);
+    final operatingExpenses = _n(s['operating_expenses']); // boshqa xarajatlar (mahsulotsiz)
+    final ingredientPurchases = _n(s['ingredient_purchases']); // sklad+postavshik (COGS'da)
+    final realized = received + debtCollected;
 
     return [
       // KPI kartalar
@@ -207,15 +211,17 @@ class _AnalyticsPageState extends State<AnalyticsPage> {
       ]),
       const SizedBox(height: 18),
 
-      // Pul oqimi: kirim / chiqim / sof + ochiq qarz
-      _card(tr('Pul oqimi'), Column(children: [
-        _flowRow(tr('Kirim (kassaga)'), received, Colors.green),
-        if (debtCollected > 0) _flowRow(tr('Qarz undirildi'), debtCollected, Colors.teal),
-        _flowRow(tr('Chiqim'), expenses, Colors.red),
-        if (salaryPaid > 0) _flowRow(tr('— shundan oylik/avans'), salaryPaid, Colors.deepOrange),
-        if (bonuses > 0) _flowRow(tr('Bonuslar (berildi)'), bonuses, Colors.amber),
+      // Foyda hisobi (COGS asosida): Realizatsiya − COGS − Ish haqi − Boshqa xarajatlar = Sof foyda
+      _card(tr('Foyda hisobi'), Column(children: [
+        _flowRow(tr('Realizatsiya'), realized, Colors.green),
+        _flowRow(tr('Tannarx (COGS)'), -cogs, Colors.orange),
+        if (salaryPaid > 0) _flowRow(tr('Ish haqi'), -salaryPaid, Colors.deepOrange),
+        if (operatingExpenses > 0) _flowRow(tr('Boshqa xarajatlar'), -operatingExpenses, Colors.red),
         Divider(color: AppTheme.border, height: 18),
         _flowRow(tr('Sof foyda'), _n(s['profit']), _n(s['profit']) >= 0 ? Colors.green : Colors.red, bold: true),
+        if (bonuses > 0) _flowRow(tr('Bonuslar (berildi)'), bonuses, Colors.amber),
+        if (ingredientPurchases > 0)
+          _flowRow('${tr('Mahsulot xaridi')} (COGS\'da)', ingredientPurchases, AppTheme.textSoft),
         if (_n(debt['total']) > 0)
           _flowRow('${tr('Ochiq qarz')} (${tr('to\'lanmagan')}, ${_n(debt['count'])})', _n(debt['total']), Colors.orange),
       ])),
@@ -236,7 +242,7 @@ class _AnalyticsPageState extends State<AnalyticsPage> {
       if (expBreak.isNotEmpty)
         _card(tr('Chiqimlar (turi bo\'yicha)'), Column(children: [
           for (final e in expBreak)
-            _hbar(e['name']?.toString() ?? '', _n(e['amount']),
+            _hbar(tr(e['name']?.toString() ?? ''), _n(e['amount']),
                 _n(expBreak.first['amount']), Colors.redAccent),
         ])),
 

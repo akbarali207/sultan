@@ -15,6 +15,11 @@ import '../../core/app_theme.dart';
 import '../../core/lang.dart';
 import '../../core/num_input.dart';
 import 'analytics_page.dart';
+import 'lots_pages.dart';
+import 'supplier_pages.dart';
+import 'payables_page.dart';
+import 'attendance_history_page.dart';
+import 'stock_intel_pages.dart';
 import '../../widgets/table_with_chairs.dart';
 import '../../widgets/orders_view.dart';
 import '../../widgets/cashbox_view.dart';
@@ -122,9 +127,9 @@ class _AdminScreenState extends State<AdminScreen> {
               icon: Icon(Icons.insights, color: AppTheme.accent),
               onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const AnalyticsPage())),
             ),
-          // STOP / ochish tugmasi — admin/director/guest (egasi: "admin bitta tugma bilan
-          // butun ilovani to'xtata olsin"). STOP endi BARCHA pul amallarини bloklaydi.
-          if (auth.role == 'admin' || auth.role == 'director' || auth.role == 'guest')
+          // STOP / ochish tugmasi — FAQAT super-admin (guest). Egasi so'radi (2026-07-13):
+          // "STOP faqat super-adminda bo'lsin". STOP BARCHA pul amallarini bloklaydi.
+          if (auth.role == 'guest')
             IconButton(
               tooltip: _frozen ? tr('Ochish') : tr('STOP'),
               icon: Icon(_frozen ? Icons.play_circle_fill : Icons.stop_circle,
@@ -174,6 +179,8 @@ class _AdminScreenState extends State<AdminScreen> {
         selectedItemColor: AppTheme.accent,
         unselectedItemColor: AppTheme.textSoft,
         type: BottomNavigationBarType.fixed,
+        selectedFontSize: 10,
+        unselectedFontSize: 9,
         items: _menuItems.map((item) => BottomNavigationBarItem(icon: Icon(item['icon']), label: tr(item['label']))).toList(),
       ),
     );
@@ -647,7 +654,7 @@ class _DashboardSectionState extends State<DashboardSection> {
               child: Column(
                 mainAxisAlignment: MainAxisAlignment.end,
                 children: [
-                  Text(v > 0 ? _short(v) : '', style: TextStyle(color: AppTheme.textSoft, fontSize: 9)),
+                  Text(v > 0 ? _short(v) : '', maxLines: 1, softWrap: false, overflow: TextOverflow.clip, style: TextStyle(color: AppTheme.textSoft, fontSize: 9)),
                   const SizedBox(height: 2),
                   Container(
                     height: 4 + frac * 95,
@@ -657,7 +664,7 @@ class _DashboardSectionState extends State<DashboardSection> {
                     ),
                   ),
                   const SizedBox(height: 4),
-                  Text(e['label'].toString(), style: TextStyle(color: AppTheme.textSoft, fontSize: 10)),
+                  Text(e['label'].toString(), maxLines: 1, softWrap: false, overflow: TextOverflow.ellipsis, style: TextStyle(color: AppTheme.textSoft, fontSize: 10)),
                 ],
               ),
             ),
@@ -867,6 +874,8 @@ class ExpensesSection extends StatefulWidget {
 
 class _ExpensesSectionState extends State<ExpensesSection> {
   String _period = 'today';
+  DateTime? _rangeFrom; // ixtiyoriy davr: dan
+  DateTime? _rangeTo;   // ixtiyoriy davr: gacha
   List<dynamic> _types = [];
   List<dynamic> _expenses = [];
   double _totalKassa = 0;
@@ -887,7 +896,13 @@ class _ExpensesSectionState extends State<ExpensesSection> {
     setState(() => _loading = true);
     try {
       final types = await ApiService.get(AppConstants.expenseTypes);
-      final out = await ApiService.get('${AppConstants.expenseOutflows}?period=$_period');
+      String q;
+      if (_rangeFrom != null && _rangeTo != null) {
+        q = '?from=${_fmtDate(_rangeFrom!)}&to=${_fmtDate(_rangeTo!)}';
+      } else {
+        q = '?period=$_period';
+      }
+      final out = await ApiService.get('${AppConstants.expenseOutflows}$q');
       setState(() {
         _types = types is List ? types : [];
         _expenses = (out is Map && out['items'] is List) ? out['items'] as List : [];
@@ -901,8 +916,39 @@ class _ExpensesSectionState extends State<ExpensesSection> {
   }
 
   void _setPeriod(String p) {
-    if (_period == p) return;
-    setState(() => _period = p);
+    if (_period == p && _rangeFrom == null) return;
+    setState(() {
+      _period = p;
+      _rangeFrom = null;
+      _rangeTo = null;
+    });
+    _load();
+  }
+
+  String _fmtDate(DateTime d) =>
+      '${d.year.toString().padLeft(4, '0')}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
+
+  Future<void> _pickRange() async {
+    final now = DateTime.now();
+    final picked = await showDateRangePicker(
+      context: context,
+      firstDate: DateTime(2023, 1, 1),
+      lastDate: DateTime(now.year, now.month, now.day),
+      initialDateRange: (_rangeFrom != null && _rangeTo != null)
+          ? DateTimeRange(start: _rangeFrom!, end: _rangeTo!)
+          : DateTimeRange(start: now.subtract(const Duration(days: 6)), end: now),
+      builder: (ctx, child) => Theme(
+        data: Theme.of(ctx).copyWith(
+          colorScheme: Theme.of(ctx).colorScheme.copyWith(primary: AppTheme.accent),
+        ),
+        child: child!,
+      ),
+    );
+    if (picked == null) return;
+    setState(() {
+      _rangeFrom = picked.start;
+      _rangeTo = picked.end;
+    });
     _load();
   }
 
@@ -998,6 +1044,14 @@ class _ExpensesSectionState extends State<ExpensesSection> {
     bool fromKassa = true;
     int? typeId = _types.isNotEmpty ? _types.first['id'] as int : null;
 
+    // «Ish haqi» (kind=salary) turi tanlansa — xodim tanlash uchun aktiv xodimlar
+    List<dynamic> staff = [];
+    try {
+      final us = await ApiService.get(AppConstants.users);
+      if (us is List) staff = us.where((u) => u['is_active'] == true).toList();
+    } catch (_) {}
+    int? staffId = staff.isNotEmpty ? staff.first['id'] as int : null;
+
     InputDecoration deco(String label) => InputDecoration(
           labelText: label,
           labelStyle: TextStyle(color: AppTheme.textSoft),
@@ -1008,7 +1062,10 @@ class _ExpensesSectionState extends State<ExpensesSection> {
     final saved = await showDialog<bool>(
       context: context,
       builder: (_) => StatefulBuilder(
-        builder: (context, setSt) => AlertDialog(
+        builder: (context, setSt) {
+          final selType = _types.firstWhere((t) => t['id'] == typeId, orElse: () => <String, dynamic>{});
+          final isSalary = (selType['kind']?.toString() ?? 'generic') == 'salary';
+          return AlertDialog(
           backgroundColor: _card,
           title: Text(tr('Harajat qo\'shish'), style: TextStyle(color: AppTheme.text)),
           content: SingleChildScrollView(
@@ -1036,18 +1093,38 @@ class _ExpensesSectionState extends State<ExpensesSection> {
                   },
                 ),
                 const SizedBox(height: 12),
-                TextField(controller: nameCtrl, style: TextStyle(color: AppTheme.text), decoration: deco(tr('Nomi (masalan: Mol go\'shti)'))),
-                const SizedBox(height: 12),
-                TextField(controller: amountCtrl, keyboardType: TextInputType.numberWithOptions(decimal: true), style: TextStyle(color: AppTheme.text), decoration: deco(tr('Summa (сом)'))),
-                const SizedBox(height: 12),
-                Row(
-                  children: [
-                    Expanded(child: TextField(controller: qtyCtrl, keyboardType: TextInputType.numberWithOptions(decimal: true), style: TextStyle(color: AppTheme.text), decoration: deco(tr('Miqdor (ixtiyoriy)')))),
-                    const SizedBox(width: 8),
-                    Expanded(child: TextField(controller: unitCtrl, style: TextStyle(color: AppTheme.text), decoration: deco(tr('O\'lchov (kg/dona)')))),
-                  ],
-                ),
-                const SizedBox(height: 12),
+                if (isSalary) ...[
+                  DropdownButtonFormField<int>(
+                    value: staffId,
+                    isExpanded: true,
+                    dropdownColor: _card,
+                    style: TextStyle(color: AppTheme.text),
+                    decoration: deco(tr('Xodim')),
+                    items: staff.map<DropdownMenuItem<int>>((u) => DropdownMenuItem<int>(
+                      value: u['id'] as int,
+                      child: Text(u['full_name']?.toString() ?? '', style: TextStyle(color: AppTheme.text)),
+                    )).toList(),
+                    onChanged: (v) => setSt(() => staffId = v),
+                  ),
+                  const SizedBox(height: 6),
+                  Align(alignment: Alignment.centerLeft, child: Text(tr('«Ish haqi» — summa xodimga AVANS bo\'lib yoziladi (Ish haqi tarixida ko\'rinadi)'), style: const TextStyle(color: Colors.teal, fontSize: 11))),
+                  const SizedBox(height: 12),
+                  TextField(controller: amountCtrl, keyboardType: TextInputType.numberWithOptions(decimal: true), style: TextStyle(color: AppTheme.text), decoration: deco(tr('Summa (сом)'))),
+                  const SizedBox(height: 12),
+                ] else ...[
+                  TextField(controller: nameCtrl, style: TextStyle(color: AppTheme.text), decoration: deco(tr('Nomi (masalan: Mol go\'shti)'))),
+                  const SizedBox(height: 12),
+                  TextField(controller: amountCtrl, keyboardType: TextInputType.numberWithOptions(decimal: true), style: TextStyle(color: AppTheme.text), decoration: deco(tr('Summa (сом)'))),
+                  const SizedBox(height: 12),
+                  Row(
+                    children: [
+                      Expanded(child: TextField(controller: qtyCtrl, keyboardType: TextInputType.numberWithOptions(decimal: true), style: TextStyle(color: AppTheme.text), decoration: deco(tr('Miqdor (ixtiyoriy)')))),
+                      const SizedBox(width: 8),
+                      Expanded(child: TextField(controller: unitCtrl, style: TextStyle(color: AppTheme.text), decoration: deco(tr('O\'lchov (kg/dona)')))),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                ],
                 Row(children: [
                   _srcToggle(setSt, tr('Naqd'), method == 'cash', () => method = 'cash'),
                   const SizedBox(width: 8),
@@ -1078,7 +1155,8 @@ class _ExpensesSectionState extends State<ExpensesSection> {
               child: Text(tr('Saqlash'), style: TextStyle(color: AppTheme.onAccent)),
             ),
           ],
-        ),
+          );
+        },
       ),
     );
 
@@ -1087,26 +1165,155 @@ class _ExpensesSectionState extends State<ExpensesSection> {
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(tr('Turni tanlang!')), backgroundColor: Colors.red));
       return;
     }
+    final selType = _types.firstWhere((t) => t['id'] == typeId, orElse: () => <String, dynamic>{});
+    final isSalary = (selType['kind']?.toString() ?? 'generic') == 'salary';
     final amount = double.tryParse(amountCtrl.text.trim()) ?? 0;
-    if (nameCtrl.text.trim().isEmpty || amount <= 0) {
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(tr('Nom va summani kiriting!')), backgroundColor: Colors.red));
+    if (amount <= 0) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(tr('Summani kiriting!')), backgroundColor: Colors.red));
+      return;
+    }
+    if (isSalary && staffId == null) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(tr('Xodimni tanlang!')), backgroundColor: Colors.red));
+      return;
+    }
+    if (!isSalary && nameCtrl.text.trim().isEmpty) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(tr('Nomni kiriting!')), backgroundColor: Colors.red));
       return;
     }
     if (_saving) return; // so'rov ketayotganda takror bosish ishlamaydi
     setState(() => _saving = true);
     try {
-      // Idempotency-Key — harajat (kassa chiqimi) retry'da ikki marta yozilmasligi uchun
-      await ApiService.post(AppConstants.expenses, {
-        'expense_type_id': typeId,
-        'name': nameCtrl.text.trim(),
+      if (isSalary) {
+        // «Ish haqi» turi — xarajat emas, xodimga AVANS bo'lib yoziladi (Ish haqi tarixi)
+        await ApiService.post(AppConstants.salaryPayments, {
+          'user_id': staffId,
+          'amount': amount,
+          'kind': 'advance',
+          'method': method,
+          'from_kassa': fromKassa,
+          'source': fromKassa ? null : (sourceCtrl.text.trim().isEmpty ? null : sourceCtrl.text.trim()),
+          'note': tr('Avans (Xarajat orqali)'),
+        }, idempotencyKey: ApiService.newIdempotencyKey());
+      } else {
+        // Idempotency-Key — harajat (kassa chiqimi) retry'da ikki marta yozilmasligi uchun
+        await ApiService.post(AppConstants.expenses, {
+          'expense_type_id': typeId,
+          'name': nameCtrl.text.trim(),
+          'amount': amount,
+          'quantity': double.tryParse(qtyCtrl.text.trim()),
+          'unit': unitCtrl.text.trim().isEmpty ? null : unitCtrl.text.trim(),
+          'method': method,
+          'from_kassa': fromKassa,
+          'source': fromKassa ? null : (sourceCtrl.text.trim().isEmpty ? null : sourceCtrl.text.trim()),
+        }, idempotencyKey: ApiService.newIdempotencyKey());
+      }
+      _load();
+    } catch (e) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('${tr('Xato')}: $e'), backgroundColor: Colors.red));
+    } finally {
+      if (mounted) setState(() => _saving = false);
+    }
+  }
+
+  // Postavshik qarzini uzish (to'liq yoki qisman) — Xarajatlar bo'limidan.
+  // Egasi: "qassobdan qarzga olamiz, keyin raschot qilamiz". To'lov Kassa chiqimi
+  // bo'lib Postavshik kategoriyasida ko'rinadi (source='supplier').
+  Future<void> _paySupplierDebt() async {
+    List<dynamic> suppliers = [];
+    try {
+      final r = await ApiService.get('/stock/suppliers');
+      if (r is List) suppliers = r.where((s) => _num(s['total_debt']) > 0.5).toList();
+    } catch (_) {}
+    if (!mounted) return;
+    if (suppliers.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(tr('Qarzli postavshik yo\'q'))));
+      return;
+    }
+    int? supId = suppliers.first['id'] as int;
+    final amountCtrl = TextEditingController();
+    String method = 'cash';
+    bool fromKassa = true;
+    double debtOf(int? id) => _num(suppliers.firstWhere((s) => s['id'] == id, orElse: () => <String, dynamic>{})['total_debt']).toDouble();
+    amountCtrl.text = debtOf(supId).toStringAsFixed(0);
+
+    final saved = await showDialog<bool>(
+      context: context,
+      builder: (_) => StatefulBuilder(
+        builder: (context, setSt) {
+          final debt = debtOf(supId);
+          return AlertDialog(
+            backgroundColor: _card,
+            title: Text(tr('Postavshik qarzini uzish'), style: TextStyle(color: AppTheme.text)),
+            content: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  DropdownButtonFormField<int>(
+                    value: supId,
+                    isExpanded: true,
+                    dropdownColor: _card,
+                    style: TextStyle(color: AppTheme.text),
+                    decoration: InputDecoration(labelText: tr('Postavshik'), labelStyle: TextStyle(color: AppTheme.textSoft)),
+                    items: suppliers.map<DropdownMenuItem<int>>((s) => DropdownMenuItem<int>(
+                      value: s['id'] as int,
+                      child: Text('${s['name']} — ${_money(_num(s['total_debt']))} сом',
+                          style: TextStyle(color: AppTheme.text), overflow: TextOverflow.ellipsis),
+                    )).toList(),
+                    onChanged: (v) => setSt(() { supId = v; amountCtrl.text = debtOf(v).toStringAsFixed(0); }),
+                  ),
+                  const SizedBox(height: 6),
+                  Align(alignment: Alignment.centerLeft,
+                      child: Text('${tr('Qarz')}: ${_money(debt)} сом',
+                          style: const TextStyle(color: Colors.orange, fontSize: 12, fontWeight: FontWeight.w600))),
+                  const SizedBox(height: 12),
+                  TextField(controller: amountCtrl, keyboardType: TextInputType.numberWithOptions(decimal: true),
+                      style: TextStyle(color: AppTheme.text),
+                      decoration: InputDecoration(labelText: tr('To\'lov summasi (qisman ham mumkin)'), labelStyle: TextStyle(color: AppTheme.textSoft))),
+                  const SizedBox(height: 12),
+                  Row(children: [
+                    _srcToggle(setSt, tr('Naqd'), method == 'cash', () => method = 'cash'),
+                    const SizedBox(width: 8),
+                    _srcToggle(setSt, tr('Karta'), method == 'card', () => method = 'card'),
+                  ]),
+                  const SizedBox(height: 10),
+                  Align(alignment: Alignment.centerLeft, child: Text(tr('Pul manbasi'), style: TextStyle(color: AppTheme.textSoft, fontSize: 12))),
+                  const SizedBox(height: 4),
+                  Row(children: [
+                    _srcToggle(setSt, tr('Kassadan'), fromKassa, () => fromKassa = true),
+                    const SizedBox(width: 8),
+                    _srcToggle(setSt, tr('Boshqa joydan'), !fromKassa, () => fromKassa = false),
+                  ]),
+                ],
+              ),
+            ),
+            actions: [
+              TextButton(onPressed: () => Navigator.pop(context, false), child: Text(tr('Bekor'), style: TextStyle(color: AppTheme.textSoft))),
+              ElevatedButton(
+                style: ElevatedButton.styleFrom(backgroundColor: Colors.green),
+                onPressed: () => Navigator.pop(context, true),
+                child: Text(tr('To\'lash'), style: const TextStyle(color: Colors.white)),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+    if (saved != true || supId == null) return;
+    final amount = double.tryParse(amountCtrl.text.trim().replaceAll(' ', '')) ?? 0;
+    if (amount <= 0) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(tr('Summani kiriting!')), backgroundColor: Colors.red));
+      return;
+    }
+    if (_saving) return;
+    setState(() => _saving = true);
+    try {
+      await ApiService.post('/stock/suppliers/$supId/pay', {
         'amount': amount,
-        'quantity': double.tryParse(qtyCtrl.text.trim()),
-        'unit': unitCtrl.text.trim().isEmpty ? null : unitCtrl.text.trim(),
         'method': method,
         'from_kassa': fromKassa,
-        'source': fromKassa ? null : (sourceCtrl.text.trim().isEmpty ? null : sourceCtrl.text.trim()),
       }, idempotencyKey: ApiService.newIdempotencyKey());
       _load();
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(tr('Qarz uzildi!')), backgroundColor: Colors.green));
     } catch (e) {
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('${tr('Xato')}: $e'), backgroundColor: Colors.red));
     } finally {
@@ -1292,11 +1499,26 @@ class _ExpensesSectionState extends State<ExpensesSection> {
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: AppTheme.bg,
-      floatingActionButton: FloatingActionButton.extended(
-        backgroundColor: _accent,
-        onPressed: _addExpense,
-        icon: Icon(Icons.add, color: AppTheme.onAccent),
-        label: Text(tr('Harajat'), style: TextStyle(color: AppTheme.onAccent)),
+      floatingActionButton: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.end,
+        children: [
+          FloatingActionButton.extended(
+            heroTag: 'debt_pay',
+            backgroundColor: Colors.brown,
+            onPressed: _paySupplierDebt,
+            icon: const Icon(Icons.handshake, color: Colors.white),
+            label: Text(tr('Qarz uzish'), style: const TextStyle(color: Colors.white)),
+          ),
+          const SizedBox(height: 12),
+          FloatingActionButton.extended(
+            heroTag: 'expense_add',
+            backgroundColor: _accent,
+            onPressed: _addExpense,
+            icon: Icon(Icons.add, color: AppTheme.onAccent),
+            label: Text(tr('Harajat'), style: TextStyle(color: AppTheme.onAccent)),
+          ),
+        ],
       ),
       body: _loading
           ? Center(child: CircularProgressIndicator(color: _accent))
@@ -1324,6 +1546,13 @@ class _ExpensesSectionState extends State<ExpensesSection> {
                           label: Text(tr('Turlar'), style: TextStyle(color: _accent, fontSize: 13)),
                           style: OutlinedButton.styleFrom(side: BorderSide(color: _accent.withValues(alpha: 0.5))),
                         ),
+                        const SizedBox(width: 8),
+                        OutlinedButton.icon(
+                          onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const PayablesPage())),
+                          icon: const Icon(Icons.account_balance_wallet_outlined, size: 18, color: Colors.red),
+                          label: Text(tr('Kreditorlar'), style: const TextStyle(color: Colors.red, fontSize: 13)),
+                          style: OutlinedButton.styleFrom(side: BorderSide(color: Colors.red.withValues(alpha: 0.5))),
+                        ),
                       ],
                     ),
                     const SizedBox(height: 16),
@@ -1342,14 +1571,15 @@ class _ExpensesSectionState extends State<ExpensesSection> {
   }
 
   Widget _periodFilter() {
+    final rangeActive = _rangeFrom != null && _rangeTo != null;
     Widget pill(String label, String p) {
-      final sel = _period == p;
+      final sel = _period == p && !rangeActive;
       return Padding(
         padding: const EdgeInsets.only(right: 8),
         child: GestureDetector(
           onTap: () => _setPeriod(p),
           child: Container(
-            padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 8),
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
             decoration: BoxDecoration(
               color: sel ? _accent : _card,
               borderRadius: BorderRadius.circular(20),
@@ -1362,7 +1592,34 @@ class _ExpensesSectionState extends State<ExpensesSection> {
       );
     }
 
-    return Row(children: [pill(tr('Bugun'), 'today'), pill(tr('Hafta'), 'week'), pill(tr('Oy'), 'month')]);
+    final rangeLabel = rangeActive
+        ? '${_fmtDate(_rangeFrom!).substring(5)} — ${_fmtDate(_rangeTo!).substring(5)}'
+        : tr('Davr');
+    final rangePill = GestureDetector(
+      onTap: _pickRange,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+        decoration: BoxDecoration(
+          color: rangeActive ? _accent : _card,
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(color: rangeActive ? _accent : AppTheme.textSoft.withValues(alpha: 0.4)),
+        ),
+        child: Row(mainAxisSize: MainAxisSize.min, children: [
+          Icon(Icons.calendar_month, size: 15, color: rangeActive ? AppTheme.text : AppTheme.textSoft),
+          const SizedBox(width: 5),
+          Text(rangeLabel,
+              style: TextStyle(color: rangeActive ? AppTheme.text : AppTheme.textSoft, fontWeight: rangeActive ? FontWeight.bold : FontWeight.normal, fontSize: 13)),
+        ]),
+      ),
+    );
+
+    return Row(children: [
+      pill(tr('Bugun'), 'today'),
+      pill(tr('Kecha'), 'yesterday'),
+      pill(tr('Hafta'), 'week'),
+      pill(tr('Oy'), 'month'),
+      rangePill,
+    ]);
   }
 
   Widget _summary() {
@@ -1478,7 +1735,9 @@ class _ExpensesSectionState extends State<ExpensesSection> {
         final notKassa = e['from_kassa'] == false;
         final canDelete = e['can_delete'] == true;
         final src = e['source']?.toString() ?? 'expense';
-        final badgeColor = src == 'salary' || src == 'advance'
+        final badgeColor = src == 'supplier'
+            ? Colors.brown
+            : src == 'salary' || src == 'advance'
             ? Colors.purple
             : src == 'stock'
                 ? Colors.teal
@@ -2145,7 +2404,7 @@ class _MenuSectionState extends State<MenuSection> with SingleTickerProviderStat
         backgroundColor: AppTheme.card,
         title: Text('${item['name']} — ${tr('retsept')}', style: TextStyle(color: AppTheme.text)),
         content: SizedBox(
-          width: 400,
+          width: (MediaQuery.of(context).size.width * 0.9).clamp(0.0, 400.0),
           child: SingleChildScrollView(
             child: Column(
               mainAxisSize: MainAxisSize.min,
@@ -2645,6 +2904,16 @@ class _MenuSectionState extends State<MenuSection> with SingleTickerProviderStat
               children: [
                 Text(item['name'].toString(),
                     style: TextStyle(color: AppTheme.text, fontWeight: FontWeight.bold)),
+                // Retseptsiz taomlar QIZIL belgi bilan — tannarх (COGS) yo'q -> foyda noaniq/oshgan.
+                // Egasi shularni ko'rib retsept qo'shishi kerak (audit #1).
+                if (cost != null && cost['has_recipe'] == false)
+                  Container(
+                    margin: const EdgeInsets.only(top: 3),
+                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                    decoration: BoxDecoration(color: Colors.red.withValues(alpha: 0.15), borderRadius: BorderRadius.circular(4)),
+                    child: Text(tr('Retseptsiz — foyda noaniq'),
+                        style: const TextStyle(color: Colors.red, fontSize: 11, fontWeight: FontWeight.bold)),
+                  ),
                 const SizedBox(height: 4),
                 if (cost != null) ...[
                   Text('${tr('Tannarx')}: ${(cost['cost'] as num?) ?? 0} ${tr('so\'m')}',
@@ -2758,6 +3027,52 @@ class _MenuSectionState extends State<MenuSection> with SingleTickerProviderStat
                     SizedBox(width: 4),
                     Text(tr('Yangi sklad'),
                         style: TextStyle(color: AppTheme.accent, fontSize: 13)),
+                  ],
+                ),
+              ),
+            ),
+          ),
+          // Ko'chirishlar tarixi
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 10),
+            child: GestureDetector(
+              onTap: _showTransferHistory,
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                decoration: BoxDecoration(
+                  color: AppTheme.card,
+                  borderRadius: BorderRadius.circular(20),
+                  border: Border.all(color: Colors.blue.withValues(alpha: 0.6)),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(Icons.swap_horiz, size: 16, color: Colors.blue),
+                    const SizedBox(width: 4),
+                    Text(tr('Ko\'chirishlar tarixi'), style: const TextStyle(color: Colors.blue, fontSize: 13)),
+                  ],
+                ),
+              ),
+            ),
+          ),
+          // Sklad sverka (retsept vs sotuv)
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 10),
+            child: GestureDetector(
+              onTap: _showReconcileDialog,
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                decoration: BoxDecoration(
+                  color: AppTheme.card,
+                  borderRadius: BorderRadius.circular(20),
+                  border: Border.all(color: Colors.orange.withValues(alpha: 0.6)),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(Icons.rule, size: 16, color: Colors.orange),
+                    const SizedBox(width: 4),
+                    Text(tr('Sklad sverka'), style: const TextStyle(color: Colors.orange, fontSize: 13)),
                   ],
                 ),
               ),
@@ -2907,6 +3222,29 @@ class _MenuSectionState extends State<MenuSection> with SingleTickerProviderStat
     return Column(
       children: [
         _buildWarehouseSelector(),
+        // ─── Partiya tizimi paneli: lotlar, postavshiklar, srok, analitika ───
+        SizedBox(
+          height: 40,
+          child: ListView(
+            scrollDirection: Axis.horizontal,
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            children: [
+              _skladToolChip(Icons.layers, tr('Partiyalar'), Colors.teal,
+                  () => Navigator.push(context, MaterialPageRoute(builder: (_) => const LotsPage()))),
+              _skladToolChip(Icons.local_shipping, tr('Postavshiklar'), Colors.indigo,
+                  () => Navigator.push(context, MaterialPageRoute(builder: (_) => const SuppliersPage()))),
+              _skladToolChip(Icons.event_busy, tr('Srok nazorati'), Colors.red,
+                  () => Navigator.push(context, MaterialPageRoute(builder: (_) => const ExpiryPage()))),
+              _skladToolChip(Icons.donut_small, tr('ABC tahlil'), Colors.purple,
+                  () => Navigator.push(context, MaterialPageRoute(builder: (_) => const AbcXyzPage()))),
+              // «Muvofiqlik tekshiruvi» (consistency) chipi OLIB TASHLANDI (egasi: tushunarsiz) 2026-07-14.
+              _skladToolChip(Icons.receipt_long, tr('Audit'), Colors.blueGrey,
+                  () => Navigator.push(context, MaterialPageRoute(builder: (_) => const AuditLogPage()))),
+              _skladToolChip(Icons.tune, tr('Sozlamalar'), Colors.grey,
+                  () => showCostingSettingsDialog(context)),
+            ],
+          ),
+        ),
         Padding(
           padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
           child: TextField(
@@ -2948,6 +3286,20 @@ class _MenuSectionState extends State<MenuSection> with SingleTickerProviderStat
                 ),
         ),
       ],
+    );
+  }
+
+  // Sklad paneli chipi (partiya tizimi funksiyalari)
+  Widget _skladToolChip(IconData icon, String label, Color color, VoidCallback onTap) {
+    return Padding(
+      padding: const EdgeInsets.only(right: 8),
+      child: ActionChip(
+        avatar: Icon(icon, size: 16, color: color),
+        label: Text(label, style: TextStyle(color: AppTheme.text, fontSize: 12)),
+        backgroundColor: AppTheme.card,
+        side: BorderSide(color: color.withValues(alpha: 0.4)),
+        onPressed: onTap,
+      ),
     );
   }
 
@@ -3016,9 +3368,12 @@ class _MenuSectionState extends State<MenuSection> with SingleTickerProviderStat
         borderRadius: BorderRadius.circular(12),
         border: Border.all(color: isLow ? Colors.red : Colors.transparent),
       ),
-      child: Row(
+      child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
           Padding(
             padding: const EdgeInsets.only(top: 2),
             child: Icon(Icons.inventory, color: isLow ? Colors.red : AppTheme.accent),
@@ -3050,7 +3405,14 @@ class _MenuSectionState extends State<MenuSection> with SingleTickerProviderStat
             children: [
               Text('$stock ${ing['unit']}', style: TextStyle(color: isLow ? Colors.red : Colors.green, fontWeight: FontWeight.bold, fontSize: 15)),
               if (isLow) Text(tr('KAM QOLDI!'), style: TextStyle(color: Colors.red, fontSize: 11, fontWeight: FontWeight.bold)),
-              Row(
+            ],
+          ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   // П/Ф — "Tayyorlash" (ishlab chiqarish): P/F +N, xom masaliqlar -retsept
@@ -3079,6 +3441,19 @@ class _MenuSectionState extends State<MenuSection> with SingleTickerProviderStat
                         borderRadius: BorderRadius.circular(4),
                       ),
                       child: Text(tr('+ Kirim'), style: TextStyle(color: Colors.green, fontSize: 12)),
+                    ),
+                  ),
+                  const SizedBox(width: 6),
+                  GestureDetector(
+                    onTap: () => _showTransferDialog(ing),
+                    child: Container(
+                      margin: const EdgeInsets.only(top: 4),
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                      decoration: BoxDecoration(
+                        color: Colors.blue.withValues(alpha: 0.2),
+                        borderRadius: BorderRadius.circular(4),
+                      ),
+                      child: Text(tr('⇄ Ko\'chirish'), style: const TextStyle(color: Colors.blue, fontSize: 12)),
                     ),
                   ),
                   const SizedBox(width: 6),
@@ -3133,10 +3508,44 @@ class _MenuSectionState extends State<MenuSection> with SingleTickerProviderStat
                       child: Icon(Icons.delete_outline, color: Colors.red, size: 16),
                     ),
                   ),
+                  const SizedBox(width: 2),
+                  // Partiya tizimi: lotlar / timeline / analitika
+                  PopupMenuButton<String>(
+                    padding: EdgeInsets.zero,
+                    color: AppTheme.card,
+                    icon: Icon(Icons.more_vert, color: AppTheme.textSoft, size: 18),
+                    onSelected: (v) {
+                      final int ingId = int.tryParse(ing['id'].toString()) ?? 0;
+                      final String ingName = ing['name'].toString();
+                      if (v == 'lots') {
+                        Navigator.push(context, MaterialPageRoute(
+                            builder: (_) => LotsPage(ingredientId: ingId, ingredientName: ingName)));
+                      } else if (v == 'timeline') {
+                        Navigator.push(context, MaterialPageRoute(
+                            builder: (_) => IngredientTimelinePage(ingredientId: ingId, ingredientName: ingName)));
+                      } else if (v == 'analytics') {
+                        Navigator.push(context, MaterialPageRoute(
+                            builder: (_) => IngredientAnalyticsPage(ingredientId: ingId, ingredientName: ingName)));
+                      }
+                    },
+                    itemBuilder: (_) => [
+                      PopupMenuItem(value: 'lots', child: Row(children: [
+                        const Icon(Icons.layers, size: 16, color: Colors.teal), const SizedBox(width: 8),
+                        Text(tr('Partiyalar'), style: TextStyle(color: AppTheme.text, fontSize: 13)),
+                      ])),
+                      PopupMenuItem(value: 'timeline', child: Row(children: [
+                        Icon(Icons.timeline, size: 16, color: AppTheme.accent), const SizedBox(width: 8),
+                        Text(tr('Tarix'), style: TextStyle(color: AppTheme.text, fontSize: 13)),
+                      ])),
+                      PopupMenuItem(value: 'analytics', child: Row(children: [
+                        const Icon(Icons.insights, size: 16, color: Colors.purple), const SizedBox(width: 8),
+                        Text(tr('Analitika'), style: TextStyle(color: AppTheme.text, fontSize: 13)),
+                      ])),
+                    ],
+                  ),
                 ],
               ),
-            ],
-          ),
+            ),
         ],
       ),
     );
@@ -3410,7 +3819,10 @@ class _MenuSectionState extends State<MenuSection> with SingleTickerProviderStat
     final category = ing['category'] as String? ?? '';
     final isRetail = _retailCategories.contains(category);
     final nameC = TextEditingController(text: ing['name']?.toString() ?? '');
-    final unitC = TextEditingController(text: ing['unit']?.toString() ?? '');
+    final unitOptions = <String>['kg', 'g', 'litr', 'ml', 'dona', 'pachka'];
+    final curUnit = (ing['unit']?.toString() ?? '').trim();
+    if (curUnit.isNotEmpty && !unitOptions.contains(curUnit)) unitOptions.insert(0, curUnit);
+    String selectedUnit = curUnit.isNotEmpty ? curUnit : 'dona';
     final minC = TextEditingController(
         text: (double.tryParse(ing['min_quantity'].toString()) ?? 0).toString());
     final priceC = TextEditingController(
@@ -3423,7 +3835,8 @@ class _MenuSectionState extends State<MenuSection> with SingleTickerProviderStat
 
     showDialog(
       context: context,
-      builder: (context) => AlertDialog(
+      builder: (context) => StatefulBuilder(
+        builder: (context, setSt) => AlertDialog(
         backgroundColor: AppTheme.card,
         title: Text('${ing['name']} — ${tr('Mahsulotni tahrirlash')}',
             style: TextStyle(color: AppTheme.text, fontSize: 16)),
@@ -3434,7 +3847,16 @@ class _MenuSectionState extends State<MenuSection> with SingleTickerProviderStat
             children: [
               _buildTextField(nameC, tr('Nomi'), Icons.label_outline),
               const SizedBox(height: 10),
-              _buildTextField(unitC, tr('Birlik'), Icons.straighten),
+              DropdownButtonFormField<String>(
+                value: selectedUnit,
+                dropdownColor: AppTheme.card,
+                style: TextStyle(color: AppTheme.text),
+                decoration: _inputDecoration(tr('Birlik'), Icons.straighten),
+                items: unitOptions
+                    .map((u) => DropdownMenuItem<String>(value: u, child: Text(u, style: TextStyle(color: AppTheme.text))))
+                    .toList(),
+                onChanged: (v) => setSt(() => selectedUnit = v!),
+              ),
               const SizedBox(height: 10),
               _buildTextField(minC, tr('Minimal miqdor'), Icons.warning_amber, isNumber: true),
               const SizedBox(height: 10),
@@ -3503,7 +3925,7 @@ class _MenuSectionState extends State<MenuSection> with SingleTickerProviderStat
               try {
                 final res = await ApiService.put('${AppConstants.stock}/${ing['id']}/edit', {
                   'name': nameC.text.trim(),
-                  'unit': unitC.text.trim(),
+                  'unit': selectedUnit,
                   'min_quantity': minC.text.trim(),
                   'price_per_unit': priceC.text.trim(),
                   if (isRetail) 'selling_price': sellC.text.trim(),
@@ -3526,6 +3948,7 @@ class _MenuSectionState extends State<MenuSection> with SingleTickerProviderStat
           ),
         ],
       ),
+      ),
     );
   }
 
@@ -3544,7 +3967,7 @@ class _MenuSectionState extends State<MenuSection> with SingleTickerProviderStat
         title: Text('${ing['name']} — ${tr('O\'zgarishlar tarixi')}',
             style: TextStyle(color: AppTheme.text, fontSize: 16)),
         content: SizedBox(
-          width: 440,
+          width: (MediaQuery.of(context).size.width * 0.9).clamp(0.0, 440.0),
           child: history.isEmpty
               ? Padding(
                   padding: const EdgeInsets.all(16),
@@ -3611,7 +4034,144 @@ class _MenuSectionState extends State<MenuSection> with SingleTickerProviderStat
             style: TextStyle(color: sel ? AppTheme.accent : AppTheme.textSoft, fontWeight: sel ? FontWeight.bold : FontWeight.normal, fontSize: 13)),
       );
 
-  void _showIncomingDialog(Map<String, dynamic> ingredient) {
+  // SKLADDAN SKLADGA KO'CHIRISH: manba mahsulot -> boshqa sklad (u yerда yo'q bo'lsa yaratiladi),
+  // tannarх ko'chadi. Masalan go'sht 1-skladdan Oshxona/Shashlik skladiga.
+  Future<void> _showTransferDialog(Map<String, dynamic> ingredient) async {
+    final curWh = ingredient['warehouse_id'];
+    final targets = _warehouses.where((w) => w['id'] != curWh).toList();
+    if (targets.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(tr('Boshqa sklad yo\'q'))));
+      return;
+    }
+    final qtyC = TextEditingController();
+    int? toWh = targets[0]['id'] as int?;
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (_) => StatefulBuilder(
+        builder: (ctx, setSt) => AlertDialog(
+          backgroundColor: AppTheme.card,
+          title: Text('${ingredient['name']} — ${tr('Ko\'chirish')}', style: TextStyle(color: AppTheme.text, fontSize: 16)),
+          content: Column(mainAxisSize: MainAxisSize.min, children: [
+            Align(alignment: Alignment.centerLeft, child: Text('${tr('Qoldiq')}: ${ingredient['stock_quantity']} ${ingredient['unit']}', style: TextStyle(color: AppTheme.textSoft, fontSize: 12))),
+            const SizedBox(height: 10),
+            DropdownButtonFormField<int?>(
+              value: toWh, isExpanded: true, dropdownColor: AppTheme.card, style: TextStyle(color: AppTheme.text),
+              decoration: _inputDecoration(tr('Qaysi skladga'), Icons.warehouse_outlined),
+              items: targets.map((w) => DropdownMenuItem<int?>(value: w['id'] as int?, child: Text(w['name']?.toString() ?? '', style: TextStyle(color: AppTheme.text)))).toList(),
+              onChanged: (v) => setSt(() => toWh = v),
+            ),
+            const SizedBox(height: 10),
+            _buildTextField(qtyC, '${tr('Miqdori')} (${ingredient['unit']})', Icons.numbers, isNumber: true),
+          ]),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx, false), child: Text(tr('Bekor'), style: TextStyle(color: AppTheme.textSoft))),
+            ElevatedButton(style: ElevatedButton.styleFrom(backgroundColor: Colors.blue),
+              onPressed: () => Navigator.pop(ctx, true), child: Text(tr('Ko\'chirish'), style: const TextStyle(color: Colors.white))),
+          ],
+        ),
+      ),
+    );
+    if (ok != true || toWh == null) return;
+    final qty = double.tryParse(qtyC.text.trim().replaceAll(',', '.')) ?? 0;
+    if (qty <= 0) return;
+    try {
+      final r = await ApiService.post('/stock/transfer', {'from_ingredient_id': ingredient['id'], 'to_warehouse_id': toWh, 'quantity': qty});
+      if (mounted) {
+        final okr = r is Map && r['ok'] == true;
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text((r is Map ? (r['message'] ?? tr('Ko\'chirildi')) : tr('Ko\'chirildi')).toString()),
+          backgroundColor: okr ? Colors.green : Colors.orange));
+      }
+      _loadData();
+    } catch (e) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('${tr('Xato')}: $e'), backgroundColor: Colors.red));
+    }
+  }
+
+  Future<void> _showTransferHistory() async {
+    List<dynamic> list = [];
+    try { final r = await ApiService.get('/stock/transfers?limit=100'); list = r is List ? r : []; } catch (_) {}
+    if (!mounted) return;
+    showDialog(context: context, builder: (_) => AlertDialog(
+      backgroundColor: AppTheme.card,
+      title: Text(tr('Ko\'chirishlar tarixi'), style: TextStyle(color: AppTheme.text)),
+      content: SizedBox(width: (MediaQuery.of(context).size.width * 0.9).clamp(0.0, 460.0), child: list.isEmpty
+        ? Padding(padding: const EdgeInsets.all(12), child: Text(tr('Tarix bo\'sh'), style: TextStyle(color: AppTheme.textSoft)))
+        : SingleChildScrollView(child: Column(mainAxisSize: MainAxisSize.min, children: list.map((t) => Padding(
+            padding: const EdgeInsets.symmetric(vertical: 4),
+            child: Row(children: [Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Text('${t['name']}  ${t['quantity']} ${t['unit'] ?? ''}', style: TextStyle(color: AppTheme.text, fontSize: 13, fontWeight: FontWeight.w600)),
+              Text('${t['from_warehouse'] ?? '—'} → ${t['to_warehouse'] ?? '—'}  •  ${t['dt'] ?? ''}', style: TextStyle(color: AppTheme.textSoft, fontSize: 11)),
+            ]))]),
+          )).toList()))),
+      actions: [TextButton(onPressed: () => Navigator.pop(context), child: Text(tr('Yopish'), style: TextStyle(color: AppTheme.accent)))],
+    ));
+  }
+
+  // SKLAD SVERKA: retsept kech kiritilgani uchun sotuvда ayrilmagan xom masaliqni ko'rsatadi va tuzatadi.
+  Future<void> _showReconcileDialog() async {
+    Map<String, dynamic>? data;
+    try { final r = await ApiService.get('/stock/reconcile'); data = r is Map ? Map<String, dynamic>.from(r) : null; } catch (_) {}
+    if (!mounted) return;
+    final items = (data?['items'] as List?) ?? [];
+    await showDialog(
+      context: context,
+      builder: (_) => StatefulBuilder(builder: (ctx, setSt) {
+        bool busy = false;
+        return AlertDialog(
+          backgroundColor: AppTheme.card,
+          title: Text(tr('Sklad sverka (retsept vs sotuv)'), style: TextStyle(color: AppTheme.text, fontSize: 16)),
+          content: SizedBox(
+            width: (MediaQuery.of(context).size.width * 0.9).clamp(0.0, 480.0),
+            child: items.isEmpty
+                ? Padding(padding: const EdgeInsets.all(12), child: Text(tr('Hammasi mos — tuzatish shart emas'), style: TextStyle(color: Colors.green)))
+                : SingleChildScrollView(child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+                    Text(tr('Bu mahsulotlar sotilgan, lekin retsept kech kiritilgani uchun skladdan AYRILMAGAN. «Tuzatish» — yetishmaganini skladdan minuslaydi.'),
+                        style: TextStyle(color: AppTheme.textSoft, fontSize: 12)),
+                    const SizedBox(height: 10),
+                    Row(children: [
+                      Expanded(flex: 4, child: Text(tr('Mahsulot'), style: TextStyle(color: AppTheme.textSoft, fontSize: 11))),
+                      Expanded(flex: 2, child: Text(tr('Kerak'), textAlign: TextAlign.right, style: TextStyle(color: AppTheme.textSoft, fontSize: 11))),
+                      Expanded(flex: 2, child: Text(tr('Ayrilgan'), textAlign: TextAlign.right, style: TextStyle(color: AppTheme.textSoft, fontSize: 11))),
+                      Expanded(flex: 2, child: Text(tr('Farq'), textAlign: TextAlign.right, style: TextStyle(color: Colors.orange, fontSize: 11))),
+                    ]),
+                    const Divider(),
+                    ...items.map((it) => Padding(padding: const EdgeInsets.symmetric(vertical: 2), child: Row(children: [
+                      Expanded(flex: 4, child: Text('${it['name']} (${it['unit'] ?? ''})', style: TextStyle(color: AppTheme.text, fontSize: 12))),
+                      Expanded(flex: 2, child: Text('${it['expected']}', textAlign: TextAlign.right, style: TextStyle(color: AppTheme.textSoft, fontSize: 12))),
+                      Expanded(flex: 2, child: Text('${it['deducted']}', textAlign: TextAlign.right, style: TextStyle(color: AppTheme.textSoft, fontSize: 12))),
+                      Expanded(flex: 2, child: Text('-${it['gap']}', textAlign: TextAlign.right, style: const TextStyle(color: Colors.orange, fontSize: 12, fontWeight: FontWeight.w600))),
+                    ]))),
+                  ])),
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx), child: Text(tr('Yopish'), style: TextStyle(color: AppTheme.textSoft))),
+            if (items.isNotEmpty)
+              ElevatedButton(
+                style: ElevatedButton.styleFrom(backgroundColor: Colors.orange),
+                onPressed: busy ? null : () async {
+                  setSt(() => busy = true);
+                  try {
+                    final r = await ApiService.post('/stock/reconcile/fix', {});
+                    if (mounted) {
+                      Navigator.pop(ctx);
+                      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                        content: Text((r is Map ? (r['message'] ?? tr('Tuzatildi')) : tr('Tuzatildi')).toString()), backgroundColor: Colors.green));
+                      _loadData();
+                    }
+                  } catch (e) {
+                    if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('${tr('Xato')}: $e'), backgroundColor: Colors.red));
+                  }
+                },
+                child: Text('${tr('Tuzatish')} (${items.length})', style: const TextStyle(color: Colors.white)),
+              ),
+          ],
+        );
+      }),
+    );
+  }
+
+  Future<void> _showIncomingDialog(Map<String, dynamic> ingredient) async {
     // Bog'langan menyu (product) yozuvi bo'lsa — joriy narx/kategoriyani shundan olamiz
     final int? menuItemId = ingredient['menu_item_id'] == null
         ? null
@@ -3633,6 +4193,20 @@ class _MenuSectionState extends State<MenuSection> with SingleTickerProviderStat
     );
     final noteController = TextEditingController();
     final sourceController = TextEditingController();
+    // Partiya (lot) maydonlari: postavshik, nakladnoy, srok, to'lov, chegirma
+    final invoiceController = TextEditingController();
+    final paidController = TextEditingController();
+    final discountController = TextEditingController();
+    final newSupplierController = TextEditingController();
+    int? selectedSupplierId;
+    bool newSupplier = false;
+    DateTime? expiryDate;
+    List<dynamic> suppliers = [];
+    try {
+      final r = await ApiService.get('/stock/suppliers');
+      if (r is List) suppliers = r;
+    } catch (_) {}
+    if (!mounted) return;
     String method = 'cash';
     bool fromKassa = true;
     bool saving = false; // kirim yuborilmoqda — ikki marta bosishdan himoya
@@ -3747,6 +4321,103 @@ class _MenuSectionState extends State<MenuSection> with SingleTickerProviderStat
                 const SizedBox(height: 12),
                 _buildTextField(noteController, tr('Izoh (ixtiyoriy)'), Icons.note),
                 const SizedBox(height: 12),
+                // ---- PARTIYA (lot) ma'lumotlari: postavshik/nakladnoy/srok/to'lov ----
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: AppTheme.bg,
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(color: AppTheme.accent.withValues(alpha: 0.3)),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(tr('Partiya ma\'lumotlari'),
+                          style: TextStyle(color: AppTheme.text, fontSize: 13, fontWeight: FontWeight.bold)),
+                      const SizedBox(height: 8),
+                      if (!newSupplier)
+                        DropdownButtonFormField<int?>(
+                          value: selectedSupplierId,
+                          isExpanded: true,
+                          dropdownColor: AppTheme.card,
+                          style: TextStyle(color: AppTheme.text),
+                          decoration: _inputDecoration(tr('Postavshik (ixtiyoriy)'), Icons.local_shipping),
+                          items: [
+                            DropdownMenuItem<int?>(value: null, child: Text(tr('Tanlanmagan'), style: TextStyle(color: AppTheme.textSoft))),
+                            ...suppliers.map((s) => DropdownMenuItem<int?>(
+                              value: s['id'] as int,
+                              child: Text(s['name'].toString(), style: TextStyle(color: AppTheme.text), overflow: TextOverflow.ellipsis),
+                            )),
+                          ],
+                          onChanged: (v) => setStateDialog(() => selectedSupplierId = v),
+                        )
+                      else
+                        _buildTextField(newSupplierController, tr('Yangi postavshik nomi'), Icons.local_shipping),
+                      TextButton.icon(
+                        onPressed: () => setStateDialog(() => newSupplier = !newSupplier),
+                        icon: Icon(newSupplier ? Icons.list : Icons.add, size: 16, color: AppTheme.accent),
+                        label: Text(newSupplier ? tr('Ro\'yxatdan tanlash') : tr('Yangi postavshik'),
+                            style: TextStyle(color: AppTheme.accent, fontSize: 12)),
+                      ),
+                      _buildTextField(invoiceController, tr('Nakladnoy raqami (ixtiyoriy)'), Icons.receipt_long),
+                      const SizedBox(height: 12),
+                      // Srok godnosti (ixtiyoriy)
+                      GestureDetector(
+                        onTap: () async {
+                          final d = await showDatePicker(
+                            context: context,
+                            initialDate: expiryDate ?? DateTime.now().add(const Duration(days: 30)),
+                            firstDate: DateTime.now(),
+                            lastDate: DateTime.now().add(const Duration(days: 365 * 3)),
+                          );
+                          if (d != null) setStateDialog(() => expiryDate = d);
+                        },
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 14),
+                          decoration: BoxDecoration(
+                            color: AppTheme.card,
+                            borderRadius: BorderRadius.circular(10),
+                            border: Border.all(color: AppTheme.textSoft),
+                          ),
+                          child: Row(children: [
+                            Icon(Icons.event_busy, color: AppTheme.accent, size: 20),
+                            const SizedBox(width: 10),
+                            Expanded(child: Text(
+                              expiryDate == null
+                                  ? tr('Srok godnosti (ixtiyoriy)')
+                                  : '${tr('Srok')}: ${expiryDate!.toIso8601String().split('T')[0]}',
+                              style: TextStyle(color: expiryDate == null ? AppTheme.textSoft : AppTheme.text, fontSize: 14),
+                            )),
+                            if (expiryDate != null)
+                              GestureDetector(
+                                onTap: () => setStateDialog(() => expiryDate = null),
+                                child: Icon(Icons.clear, color: AppTheme.textSoft, size: 18),
+                              ),
+                          ]),
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      _buildTextField(discountController, tr('Chegirma (so\'m, ixtiyoriy)'), Icons.discount, isNumber: true),
+                      const SizedBox(height: 12),
+                      _buildTextField(paidController, tr('To\'landi (bo\'sh = to\'liq)'), Icons.payments, isNumber: true),
+                      Builder(builder: (_) {
+                        final q = double.tryParse(quantityController.text) ?? 0;
+                        final pr = double.tryParse(priceController.text) ?? 0;
+                        final disc = double.tryParse(discountController.text) ?? 0;
+                        final tot = (q * pr - disc).clamp(0, double.infinity);
+                        final paid = paidController.text.trim().isEmpty ? tot : (double.tryParse(paidController.text) ?? 0);
+                        final debt = (tot - paid).clamp(0, double.infinity);
+                        if (debt <= 0) return const SizedBox.shrink();
+                        return Padding(
+                          padding: const EdgeInsets.only(top: 6),
+                          child: Text('${tr('Qarz bo\'lib qoladi')}: ${debt.toStringAsFixed(0)} ${tr('so\'m')}',
+                              style: const TextStyle(color: Colors.orange, fontSize: 12, fontWeight: FontWeight.bold)),
+                        );
+                      }),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 12),
                 Row(children: [
                   Expanded(child: GestureDetector(
                     onTap: () => setStateDialog(() => method = 'cash'),
@@ -3814,6 +4485,19 @@ class _MenuSectionState extends State<MenuSection> with SingleTickerProviderStat
                     'method': method,
                     'from_kassa': fromKassa,
                     'source': fromKassa ? null : (sourceController.text.trim().isEmpty ? null : sourceController.text.trim()),
+                    // Partiya (lot) maydonlari — F10/F12/F13
+                    if (newSupplier && newSupplierController.text.trim().isNotEmpty)
+                      'supplier_name': newSupplierController.text.trim()
+                    else if (selectedSupplierId != null)
+                      'supplier_id': selectedSupplierId,
+                    if (invoiceController.text.trim().isNotEmpty)
+                      'invoice_no': invoiceController.text.trim(),
+                    if (expiryDate != null)
+                      'expiry_date': expiryDate!.toIso8601String().split('T')[0],
+                    if (discountController.text.trim().isNotEmpty)
+                      'discount': double.tryParse(discountController.text) ?? 0,
+                    if (paidController.text.trim().isNotEmpty)
+                      'paid_amount': double.tryParse(paidController.text) ?? 0,
                   }, idempotencyKey: ApiService.newIdempotencyKey());
 
                   if (context.mounted) Navigator.pop(context);
@@ -4404,7 +5088,7 @@ class _StaffSectionState extends State<StaffSection> {
     final faceIdController = TextEditingController();
     final lateFineController = TextEditingController(text: '0');
     final salaryDayController = TextEditingController(text: '1');
-    final salaryPeriodController = TextEditingController(text: '30');
+    final salaryPeriodController = TextEditingController(text: '10'); // standart 10 kunlik davr (2026-07-13)
     int? selectedRoleId = _roles.isEmpty
         ? null
         : (_roles.firstWhere((r) => r['name'] == 'waiter', orElse: () => _roles.first)['id'] as int);
@@ -4838,7 +5522,7 @@ class _StaffSectionState extends State<StaffSection> {
             backgroundColor: AppTheme.card,
             title: Text('${tr('Dona stavkalar')}: $userName', style: TextStyle(color: AppTheme.text, fontSize: 16)),
             content: SizedBox(
-              width: 420,
+              width: (MediaQuery.of(context).size.width * 0.9).clamp(0.0, 420.0),
               child: Column(mainAxisSize: MainAxisSize.min, children: [
                 Text(tr('Har taom uchun 1 dona stavkasi (so\'m). Bo\'sh = hisoblanmaydi.'),
                     style: TextStyle(color: AppTheme.textSoft, fontSize: 11.5)),
@@ -4858,7 +5542,7 @@ class _StaffSectionState extends State<StaffSection> {
                 const SizedBox(height: 8),
                 SizedBox(
                   height: 340,
-                  width: 420,
+                  width: (MediaQuery.of(context).size.width * 0.9).clamp(0.0, 420.0),
                   child: filtered.isEmpty
                       ? Center(child: Text(tr('Taom yo\'q'), style: TextStyle(color: AppTheme.textSoft)))
                       : ListView.builder(
@@ -6022,21 +6706,21 @@ class _ReportSectionState extends State<ReportSection> {
         if (list.isEmpty) rows.add(empty());
         break;
       case 'profit':
-        // Sof foyda = REALIZED: kassaga tushgan (karta+naqd) + undirilgan qarz − harajat − ish haqi (kassadan tashqari).
-        // To'lanmagan qarz foydaga KIRMAYDI (egasi tasdig'i).
+        // Sof foyda (COGS asosida, egasi tasdig'i 2026-07-14) = Realizatsiya − COGS − Ish haqi(to'liq)
+        // − Boshqa xarajatlar. Mahsulot xaridi (sklad/postavshik) COGS'da hisoblanadi (ikki marta EMAS).
+        // To'lanmagan qarz foydaga KIRMAYDI.
         title = tr('Sof foyda'); headerColor = Colors.green; headerValue = '${_money(n(d['profit']))} ${tr('so\'m')}';
         rows.add(row(tr('Kassaga tushdi (karta+naqd)'), _money(n(d['received'])), rc: Colors.blue));
         rows.add(row(tr('Qarz undirildi'), '+${_money(n(d['debt_collected']))}', rc: Colors.green));
         rows.add(row(tr('Realizatsiya'), _money(n(d['realized'])), rc: AppTheme.accent));
-        rows.add(row(tr('Harajat'), '-${_money(n(d['expenses']))}', rc: Colors.red));
-        if (n(d['extra_labor']) > 0) {
-          rows.add(row(tr('Ish haqi (kassadan tashqari)'), '-${_money(n(d['extra_labor']))}', rc: Colors.red));
-        }
+        rows.add(row(tr('Tannarx (COGS)'), '-${_money(n(d['cogs']))}', rc: Colors.orange));
+        rows.add(row(tr('Ish haqi'), '-${_money(n(d['salary_paid']))}', rc: Colors.red));
+        rows.add(row(tr('Boshqa xarajatlar'), '-${_money(n(d['operating_expenses']))}', rc: Colors.red));
         rows.add(row(tr('Sof foyda'), _money(n(d['profit'])), rc: Colors.green));
         rows.add(_detailSub(tr('Ma\'lumot uchun')));
         rows.add(row(tr('Savdo (qarz bilan)'), _money(n(d['sales'])), rc: AppTheme.textSoft));
         rows.add(row(tr('Ochiq qarz (kassaga tushmadi)'), _money(n(pay['debt'])), rc: Colors.deepOrange));
-        rows.add(row(tr('Tannarx (COGS)'), _money(n(d['cogs'])), rc: Colors.orange));
+        rows.add(row(tr('Mahsulot xaridi (COGS\'da)'), _money(n(d['ingredient_purchases'])), rc: AppTheme.textSoft));
         rows.add(row(tr('Valovaya foyda (savdo-COGS)'), _money(n(d['gross_profit'])), rc: Colors.teal));
         break;
       case 'debt':
@@ -6115,7 +6799,7 @@ class _ReportSectionState extends State<ReportSection> {
           ],
         ),
         content: SizedBox(
-          width: 420,
+          width: (MediaQuery.of(context).size.width * 0.9).clamp(0.0, 420.0),
           child: rows.isEmpty
               ? empty()
               : SingleChildScrollView(
@@ -6167,11 +6851,12 @@ class _ReportSectionState extends State<ReportSection> {
         kv(tr('Savdo'), '${_money(n(d['sales']))} ${tr('so\'m')}'),
         kv(tr('Tannarx (COGS)'), '${_money(n(d['cogs']))} ${tr('so\'m')}'),
         kv(tr('Valovaya foyda'), '${_money(n(d['gross_profit']))} ${tr('so\'m')}'),
-        // Sof foyda = REALIZED: kassaga tushgan + undirilgan qarz − harajat − ish haqi
+        // Sof foyda (COGS asosida) = Realizatsiya − COGS − Ish haqi(to'liq) − Boshqa xarajatlar
         kv(tr('Kassaga tushdi (karta+naqd)'), '${_money(n(d['received']))} ${tr('so\'m')}'),
         kv(tr('Qarz undirildi'), '${_money(n(d['debt_collected']))} ${tr('so\'m')}'),
-        kv(tr('Harajat'), '${_money(n(d['expenses']))} ${tr('so\'m')}'),
-        if (n(d['extra_labor']) > 0) kv(tr('Ish haqi (kassadan tashqari)'), '${_money(n(d['extra_labor']))} ${tr('so\'m')}'),
+        kv(tr('Ish haqi'), '${_money(n(d['salary_paid']))} ${tr('so\'m')}'),
+        kv(tr('Boshqa xarajatlar'), '${_money(n(d['operating_expenses']))} ${tr('so\'m')}'),
+        kv(tr('Mahsulot xaridi (COGS\'da)'), '${_money(n(d['ingredient_purchases']))} ${tr('so\'m')}'),
         kv(tr('Sof foyda'), '${_money(n(d['profit']))} ${tr('so\'m')}'),
         pw.Divider(color: PdfColors.grey400),
         kv(tr('Karta'), '${_money(n(pay['card']))} ${tr('so\'m')}'),
@@ -8273,6 +8958,8 @@ class PayrollSection extends StatefulWidget {
 class _PayrollSectionState extends State<PayrollSection> {
   bool _isLoading = true;
   late DateTime _month;
+  DateTime? _rangeFrom; // ixtiyoriy davr boshi (null = oy rejimi)
+  DateTime? _rangeTo;   // ixtiyoriy davr oxiri
   Map<String, dynamic>? _data;
 
   @override
@@ -8286,8 +8973,11 @@ class _PayrollSectionState extends State<PayrollSection> {
   String _ymd(DateTime d) =>
       '${d.year.toString().padLeft(4, '0')}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
 
-  DateTime get _from => DateTime(_month.year, _month.month, 1);
-  DateTime get _to => DateTime(_month.year, _month.month + 1, 0); // oyning oxirgi kuni
+  bool get _customRange => _rangeFrom != null && _rangeTo != null;
+
+  // Davr chegaralari: ixtiyoriy davr tanlansa o'sha (1–10 iyul kabi), aks holda joriy oy (1 — oxirgi kun)
+  DateTime get _from => _customRange ? _rangeFrom! : DateTime(_month.year, _month.month, 1);
+  DateTime get _to => _customRange ? _rangeTo! : DateTime(_month.year, _month.month + 1, 0);
 
   bool get _isCurrentMonth {
     final now = DateTime.now();
@@ -8309,9 +8999,45 @@ class _PayrollSectionState extends State<PayrollSection> {
   }
 
   void _shiftMonth(int delta) {
-    if (delta > 0 && _isCurrentMonth) return; // kelajakka o'tmaymiz
-    setState(() => _month = DateTime(_month.year, _month.month + delta));
+    final wasCustom = _customRange;
+    // Kelajak oyга o'tmaymiz. Custom davrда o'ng strelka faqat davrdan chiqaradi (joriy oyга qaytadi).
+    if (delta > 0 && _isCurrentMonth) {
+      if (!wasCustom) return;
+      setState(() { _rangeFrom = null; _rangeTo = null; });
+      _load();
+      return;
+    }
+    setState(() {
+      _rangeFrom = null; // oy strelkasi bosilса ixtiyoriy davrdan chiqamiz
+      _rangeTo = null;
+      _month = DateTime(_month.year, _month.month + delta);
+    });
     _load();
+  }
+
+  // Ixtiyoriy davr tanlash: "kundan — kungacha" (masalan 1–10 iyul)
+  Future<void> _pickRange() async {
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    DateTime clamp(DateTime d) => d.isAfter(today) ? today : d;
+    final picked = await showDateRangePicker(
+      context: context,
+      firstDate: DateTime(2023),
+      lastDate: today,
+      initialDateRange: DateTimeRange(start: clamp(_from), end: clamp(_to)),
+      builder: (c, w) => Theme(
+        data: (AppTheme.dark ? ThemeData.dark() : ThemeData.light())
+            .copyWith(colorScheme: (AppTheme.dark ? const ColorScheme.dark() : const ColorScheme.light()).copyWith(primary: AppTheme.accent)),
+        child: w!,
+      ),
+    );
+    if (picked != null) {
+      setState(() {
+        _rangeFrom = DateTime(picked.start.year, picked.start.month, picked.start.day);
+        _rangeTo = DateTime(picked.end.year, picked.end.month, picked.end.day);
+      });
+      _load();
+    }
   }
 
   static const List<String> _monthsUz = [
@@ -8319,6 +9045,11 @@ class _PayrollSectionState extends State<PayrollSection> {
     'Iyul', 'Avgust', 'Sentabr', 'Oktabr', 'Noyabr', 'Dekabr'
   ];
   String get _monthLabel => '${tr(_monthsUz[_month.month - 1])} ${_month.year}';
+  String _dmy(DateTime d) =>
+      '${d.day.toString().padLeft(2, '0')}.${d.month.toString().padLeft(2, '0')}.${d.year}';
+  String get _rangeLabel => '${_dmy(_from)} – ${_dmy(_to)}';
+  // Sarlavha/PDF/payslip uchun davr nomi: ixtiyoriy davr tanlansa sana oralig'i, aks holda oy nomi
+  String get _periodLabel => _customRange ? _rangeLabel : _monthLabel;
 
   String _money(num v) {
     final neg = v < 0;
@@ -8402,7 +9133,8 @@ class _PayrollSectionState extends State<PayrollSection> {
         return '$d ${tr('kun')} × ${_money(val)}';
       case 'hourly':
         final h = double.tryParse(s['hours_worked']?.toString() ?? '0') ?? 0;
-        return '${_fmtNum(h)} ${tr('soat')} × ${_money(val)}';
+        final hp = h.floor(); // faqat to'liq soatlar to'lanadi
+        return '$hp ${tr('to\'liq soat')} × ${_money(val)}  (${_fmtNum(h)} ${tr('soat')})';
       default:
         return '';
     }
@@ -8410,7 +9142,10 @@ class _PayrollSectionState extends State<PayrollSection> {
 
   String get _advanceDate {
     final now = DateTime.now();
-    return _isCurrentMonth ? _ymd(DateTime(now.year, now.month, now.day)) : _ymd(_to);
+    final today = DateTime(now.year, now.month, now.day);
+    final to = _to;
+    // To'lov sanasi = davr oxiri, lekin bugundan keyin bo'lmaydi (kelajakka yozmaymiz)
+    return _ymd(to.isAfter(today) ? today : to);
   }
 
   @override
@@ -8435,6 +9170,11 @@ class _PayrollSectionState extends State<PayrollSection> {
                     Text(tr('Ish haqi'),
                         style: TextStyle(color: AppTheme.text, fontSize: 18, fontWeight: FontWeight.bold)),
                     const Spacer(),
+                    IconButton(
+                      icon: Icon(Icons.fingerprint, color: Colors.teal),
+                      tooltip: tr('Davomat tarixi'),
+                      onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const AttendanceHistoryPage())),
+                    ),
                     if (staff.isNotEmpty) ...[
                       IconButton(
                         icon: const Icon(Icons.table_view, color: Colors.green),
@@ -8469,12 +9209,65 @@ class _PayrollSectionState extends State<PayrollSection> {
                           style: TextStyle(color: AppTheme.text, fontSize: 15, fontWeight: FontWeight.bold)),
                       IconButton(
                         icon: Icon(Icons.chevron_right,
-                            color: _isCurrentMonth ? AppTheme.textSoft.withValues(alpha: 0.35) : AppTheme.accent),
-                        onPressed: _isCurrentMonth ? null : () => _shiftMonth(1),
+                            color: (_isCurrentMonth && !_customRange)
+                                ? AppTheme.textSoft.withValues(alpha: 0.35)
+                                : AppTheme.accent),
+                        onPressed: (_isCurrentMonth && !_customRange) ? null : () => _shiftMonth(1),
                       ),
                     ],
                   ),
                 ),
+                const SizedBox(height: 8),
+                // Ixtiyoriy davr: "kundan — kungacha" tanlash (masalan 1–10 iyul)
+                _customRange
+                    ? Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                        decoration: BoxDecoration(
+                          color: AppTheme.accent.withValues(alpha: 0.12),
+                          borderRadius: BorderRadius.circular(10),
+                          border: Border.all(color: AppTheme.accent.withValues(alpha: 0.5)),
+                        ),
+                        child: Row(
+                          children: [
+                            Icon(Icons.date_range, size: 16, color: AppTheme.accent),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: Text(_rangeLabel,
+                                  style: TextStyle(color: AppTheme.accent, fontWeight: FontWeight.bold, fontSize: 13)),
+                            ),
+                            InkWell(
+                              onTap: _pickRange,
+                              child: Padding(
+                                padding: const EdgeInsets.symmetric(horizontal: 6),
+                                child: Icon(Icons.edit_calendar, size: 18, color: AppTheme.accent),
+                              ),
+                            ),
+                            InkWell(
+                              onTap: () {
+                                setState(() { _rangeFrom = null; _rangeTo = null; });
+                                _load();
+                              },
+                              child: const Padding(
+                                padding: EdgeInsets.only(left: 4),
+                                child: Icon(Icons.close, size: 18, color: Colors.redAccent),
+                              ),
+                            ),
+                          ],
+                        ),
+                      )
+                    : SizedBox(
+                        width: double.infinity,
+                        child: OutlinedButton.icon(
+                          onPressed: _pickRange,
+                          icon: Icon(Icons.date_range, size: 16, color: AppTheme.accent),
+                          label: Text(tr('Boshqa davr tanlash'),
+                              style: TextStyle(color: AppTheme.accent, fontSize: 12)),
+                          style: OutlinedButton.styleFrom(
+                            side: BorderSide(color: AppTheme.border),
+                            padding: const EdgeInsets.symmetric(vertical: 8),
+                          ),
+                        ),
+                      ),
                 const SizedBox(height: 12),
                 Row(
                   children: [
@@ -8592,7 +9385,7 @@ class _PayrollSectionState extends State<PayrollSection> {
         fromYmd: _ymd(_from),
         toYmd: _ymd(_to),
         advanceDate: _advanceDate,
-        monthLabel: _monthLabel,
+        monthLabel: _periodLabel,
         roleLabel: _roleLabel,
         salaryTypeLabel: _salaryTypeLabel,
         money: _money,
@@ -8677,7 +9470,9 @@ class _PayrollSectionState extends State<PayrollSection> {
     }
     final csv = '﻿${rows.join('\r\n')}';
     final dir = await getApplicationDocumentsDirectory();
-    final fileName = 'ish_haqi_${_month.year}_${_month.month.toString().padLeft(2, '0')}.csv';
+    final fileName = _customRange
+        ? 'ish_haqi_${_ymd(_from)}_${_ymd(_to)}.csv'
+        : 'ish_haqi_${_month.year}_${_month.month.toString().padLeft(2, '0')}.csv';
     final filePath = '${dir.path}/$fileName';
     await File(filePath).writeAsString(csv);
     if (mounted) {
@@ -8725,7 +9520,7 @@ class _PayrollSectionState extends State<PayrollSection> {
       orientation: pw.PageOrientation.landscape,
       margin: const pw.EdgeInsets.all(22),
       build: (ctx) => [
-        pw.Text('${tr('Ish haqi varaqasi')} — $_monthLabel',
+        pw.Text('${tr('Ish haqi varaqasi')} — $_periodLabel',
             style: pw.TextStyle(font: fontBold, fontSize: 16)),
         pw.SizedBox(height: 4),
         pw.Text('${tr('Davr')}: ${_data?['from']} — ${_data?['to']}',
@@ -8856,6 +9651,7 @@ class _PayslipDialog extends StatefulWidget {
 
 class _PayslipDialogState extends State<_PayslipDialog> {
   List<dynamic> _payments = [];
+  List<dynamic> _periods = []; // 10-kunlik davrlar tarixi (oplacheno belgisi bilan)
   List<dynamic> _fines = [];
   List<dynamic> _bonuses = [];
   Map<String, dynamic>? _staffOverride; // jarima tahrirlangach yangilangan ma'lumot
@@ -8946,8 +9742,18 @@ class _PayslipDialogState extends State<_PayslipDialog> {
   void initState() {
     super.initState();
     _loadPayments();
+    _loadPeriods();
     _loadFines();
     _loadBonuses();
+  }
+
+  // Ish haqi davrlar tarixi (period_days kunlik, odatda 10) — oplacheno belgisi bilan
+  Future<void> _loadPeriods() async {
+    try {
+      final data = await ApiService.get('${AppConstants.payrollReport}/periods?user_id=$_userId&count=6');
+      final list = (data is Map ? data['periods'] : null) as List?;
+      if (mounted) setState(() => _periods = list ?? []);
+    } catch (_) {}
   }
 
   Future<void> _loadBonuses() async {
@@ -9290,6 +10096,9 @@ class _PayslipDialogState extends State<_PayslipDialog> {
         'from_kassa': fromKassa,
         'source': fromKassa ? null : (sourceCtrl.text.trim().isEmpty ? null : sourceCtrl.text.trim()),
         'date': widget.advanceDate,
+        // DAVR REJIMI: tanlangan davr — backend "har N kunda" siklini o'tkazib yuboradi (davr bo'yicha to'lov)
+        'period_from': widget.fromYmd,
+        'period_to': widget.toYmd,
       }, idempotencyKey: ApiService.newIdempotencyKey());
       // Backend xato (masalan sikl) — message qaytaradi, id bo'lmaydi
       if (res is Map && res['id'] == null) {
@@ -9301,6 +10110,7 @@ class _PayslipDialogState extends State<_PayslipDialog> {
         return;
       }
       await _loadPayments();
+      _loadPeriods();
       widget.onChanged();
     } finally {
       if (mounted) setState(() => _paying = false);
@@ -9330,6 +10140,7 @@ class _PayslipDialogState extends State<_PayslipDialog> {
     try {
       await ApiService.delete('${AppConstants.salaryPayments}/$id');
       await _loadPayments();
+      _loadPeriods();
       widget.onChanged();
     } catch (_) {}
   }
@@ -9385,7 +10196,7 @@ class _PayslipDialogState extends State<_PayslipDialog> {
         ],
       ),
       content: SizedBox(
-        width: 330,
+        width: (MediaQuery.of(context).size.width * 0.9).clamp(0.0, 330.0),
         child: SingleChildScrollView(
           child: Column(
             mainAxisSize: MainAxisSize.min,
@@ -9490,6 +10301,35 @@ class _PayslipDialogState extends State<_PayslipDialog> {
                     ]),
                   ),
                 ),
+              // ── Davomat (kelish/ketish vaqti) ──
+              if ((s['attendance'] as List?)?.isNotEmpty ?? false)
+                Theme(
+                  data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
+                  child: ExpansionTile(
+                    tilePadding: EdgeInsets.zero,
+                    childrenPadding: const EdgeInsets.only(bottom: 6),
+                    iconColor: AppTheme.accent,
+                    collapsedIconColor: AppTheme.accent,
+                    title: Text('${tr('Davomat')} (${tr('kelish/ketish')})  •  ${(s['attendance'] as List).length} ${tr('kun')}',
+                        style: TextStyle(color: AppTheme.text, fontSize: 13, fontWeight: FontWeight.w600)),
+                    children: [
+                      for (final a in (s['attendance'] as List))
+                        Padding(
+                          padding: const EdgeInsets.symmetric(vertical: 2),
+                          child: Row(children: [
+                            Expanded(
+                                child: Text(a['day']?.toString() ?? '',
+                                    style: TextStyle(color: AppTheme.textSoft, fontSize: 12))),
+                            Text('${a['in'] ?? '—'} → ${a['out'] ?? '—'}',
+                                style: TextStyle(color: AppTheme.text, fontSize: 12)),
+                            const SizedBox(width: 8),
+                            Text('${widget.fmtNum(double.tryParse(a['hours']?.toString() ?? '0') ?? 0)} ${tr('soat')}',
+                                style: TextStyle(color: AppTheme.accent, fontSize: 12, fontWeight: FontWeight.w600)),
+                          ]),
+                        ),
+                    ],
+                  ),
+                ),
               Divider(color: AppTheme.border, height: 16),
               Text(tr('To\'lovlar'),
                   style: TextStyle(color: AppTheme.text, fontSize: 14, fontWeight: FontWeight.bold)),
@@ -9505,13 +10345,31 @@ class _PayslipDialogState extends State<_PayslipDialog> {
                 ),
                 const SizedBox(width: 8),
                 Expanded(
-                  child: OutlinedButton.icon(
-                    onPressed: (canPaySalary && remaining > 0) ? () => _addPayment('salary') : null,
-                    icon: Icon(Icons.payments, size: 16, color: (canPaySalary && remaining > 0) ? Colors.green : AppTheme.textSoft),
-                    label: Text(tr('Oylik to\'lash'),
-                        style: TextStyle(color: (canPaySalary && remaining > 0) ? Colors.green : AppTheme.textSoft, fontSize: 12)),
-                    style: OutlinedButton.styleFrom(side: BorderSide(color: AppTheme.border), padding: const EdgeInsets.symmetric(vertical: 4)),
-                  ),
+                  // !_loading — to'lovlar yuklanmaguncha bosilmaydi (reopen poygasida qoldiq vaqtincha
+                  // to'liq net ko'rinib, ikki marta bosilmasligi uchun). !_paying — jarayon ketayotganда o'chiq.
+                  child: Builder(builder: (_) {
+                    final salaryReady = !_loading && !_paying && canPaySalary && remaining > 0;
+                    // Tugma o'chiq bo'lsa — SABABINI tooltipда ko'rsatamiz (nega bosilmayotgani tushunarli bo'lsin).
+                    final reason = salaryReady
+                        ? ''
+                        : salarySettled
+                            ? tr('Bu davr uchun oylik allaqachon berilgan')
+                            : !canPaySalary
+                                ? tr('Oylik davri hali to\'lmagan')
+                                : remaining <= 0
+                                    ? tr('Qoldiq yo\'q')
+                                    : tr('Hozircha to\'lab bo\'lmaydi');
+                    return Tooltip(
+                      message: reason,
+                      child: OutlinedButton.icon(
+                        onPressed: salaryReady ? () => _addPayment('salary') : null,
+                        icon: Icon(Icons.payments, size: 16, color: salaryReady ? Colors.green : AppTheme.textSoft),
+                        label: Text(tr('Oylik to\'lash'),
+                            style: TextStyle(color: salaryReady ? Colors.green : AppTheme.textSoft, fontSize: 12)),
+                        style: OutlinedButton.styleFrom(side: BorderSide(color: AppTheme.border), padding: const EdgeInsets.symmetric(vertical: 4)),
+                      ),
+                    );
+                  }),
                 ),
               ]),
               const SizedBox(height: 8),
@@ -9565,6 +10423,52 @@ class _PayslipDialogState extends State<_PayslipDialog> {
                     ),
                   );
                 }),
+              // ── Davrlar tarixi (10 kunlik, oplacheno belgisi) ──
+              if (_periods.isNotEmpty) ...[
+                const SizedBox(height: 10),
+                Text('${tr('Davrlar tarixi')}  •  ${tr('har')} $periodDays ${tr('kun')}',
+                    style: TextStyle(color: AppTheme.text, fontSize: 14, fontWeight: FontWeight.bold)),
+                const SizedBox(height: 4),
+                ..._periods.map((pr) {
+                  final from = pr['from']?.toString() ?? '';
+                  final to = pr['to']?.toString() ?? '';
+                  final paid = double.tryParse(pr['paid']?.toString() ?? '0') ?? 0;
+                  final settled = pr['settled'] == true;
+                  final idx = (pr['index'] as num?)?.toInt() ?? 0;
+                  return Container(
+                    margin: const EdgeInsets.symmetric(vertical: 2),
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                    decoration: BoxDecoration(
+                      color: settled ? Colors.green.withValues(alpha: 0.10) : AppTheme.bg,
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: settled ? Colors.green.withValues(alpha: 0.5) : AppTheme.border),
+                    ),
+                    child: Row(
+                      children: [
+                        Icon(settled ? Icons.check_circle : Icons.schedule,
+                            size: 15, color: settled ? Colors.green : AppTheme.textSoft),
+                        const SizedBox(width: 6),
+                        Expanded(
+                          child: Text('$from — $to${idx == 0 ? '  •  ${tr('joriy')}' : ''}',
+                              style: TextStyle(color: AppTheme.text, fontSize: 11, fontWeight: FontWeight.w600)),
+                        ),
+                        Column(
+                          crossAxisAlignment: CrossAxisAlignment.end,
+                          children: [
+                            Text(settled ? tr('To\'landi') : (paid > 0 ? tr('Qisman') : tr('Ochiq')),
+                                style: TextStyle(
+                                    color: settled ? Colors.green : (paid > 0 ? Colors.orange : AppTheme.textSoft),
+                                    fontSize: 11, fontWeight: FontWeight.bold)),
+                            if (paid > 0)
+                              Text('${widget.money(paid)} ${tr('so\'m')}',
+                                  style: TextStyle(color: AppTheme.textSoft, fontSize: 10)),
+                          ],
+                        ),
+                      ],
+                    ),
+                  );
+                }),
+              ],
               // ── Qo'lda jarimalar ──
               const SizedBox(height: 8),
               Row(

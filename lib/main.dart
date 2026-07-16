@@ -1,8 +1,5 @@
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
-import 'package:firebase_core/firebase_core.dart';
-import 'firebase_options.dart';
 import 'providers/auth_provider.dart';
 import 'core/app_theme.dart';
 import 'core/lang.dart';
@@ -15,16 +12,10 @@ final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  // Firebase FAQAT Android va Web'da (FCM/bildirishnomalar uchun poydevor).
-  // Windows kassalarida ISHLATILMAYDI — u yerda SDK beta va kassaga xavf.
-  // Firebase ishga tushmasa ham ilova baribir ochiladi (kassa Firebase'ga bog'liq emas).
-  if (kIsWeb || defaultTargetPlatform == TargetPlatform.android) {
-    try {
-      await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
-    } catch (e) {
-      debugPrint('Firebase ishga tushmadi (ilova baribir ishlaydi): $e');
-    }
-  }
+  // Eslatma: Firebase OLIB TASHLANDI (2026-07-14). Loyiha local-first — baza
+  // gibrid (bulut PostgreSQL + lokal POS-PC), ApiService.resolveBase orqali
+  // lokal Wi-Fi ↔ internet almashadi; Firebase'ga bog'liq emas edi (bo'sh init).
+  // Push-bildirishnoma kerak bo'lsa: firebase_core + firebase_messaging birga qo'shiladi.
 
   await AppTheme.instance.load();
   await Lang.instance.load();

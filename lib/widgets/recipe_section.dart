@@ -886,7 +886,7 @@ class _RecipeLineDialogState extends State<_RecipeLineDialog> {
               : (_pfMode ? tr('Polufabrikat') : tr('Masaliq qo\'shish')),
           style: TextStyle(color: AppTheme.text)),
       content: SizedBox(
-        width: 320,
+        width: (MediaQuery.of(context).size.width * 0.9).clamp(0.0, 320.0),
         child: SingleChildScrollView(
           child: Column(mainAxisSize: MainAxisSize.min, children: [
             // Yangi satr: Masaliq | Polufabrikat tanlovi

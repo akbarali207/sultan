@@ -78,11 +78,15 @@ async function recordFaceAttendance(faceId, when = null) {
     //    Sana cheklovi YO'Q: tunda o'tuvchi smena (masalan 23:30 kirib 01:00 chiqsa)
     //    ochiq check_in oldingi sanada qoladi — sana bo'yicha filtrlansa topilmay,
     //    chiqish o'rniga yangi kirish yozilib smena mangu ochiq qolardi.
-    //    Buning o'rniga oxirgi 24 soat oynasidagi eng so'nggi ochiq sessiyani topamiz.
+    //    Buning o'rniga oxirgi 16 soat oynasidagi eng so'nggi ochiq sessiyani topamiz.
+    //    AUDIT-FIX #3: oyna 24->16 soat. Xodim CHIQISHNI unutса (masalan 1-kun kelib chiqmаsа),
+    //    2-kun kelgani 23 soatlik "chiqish" bo'lib hisoblanib, soatlik ish haqi haddan tashqari
+    //    oshib ketardi. 16 soat — real smena (tunги smena ham) sig'adi, lekin unutilgan sessiya
+    //    (>16s) YOPILMAYDI — yangi KIRISH yoziladi (eski sessiya ochiq qoladi, 0 soat).
     const open = await client.query(
       `SELECT * FROM attendance
        WHERE user_id = $1 AND check_out IS NULL
-         AND check_in > $2::timestamp - make_interval(hours => 24)
+         AND check_in > $2::timestamp - make_interval(hours => 16)
          AND check_in <= $2::timestamp
        ORDER BY check_in DESC LIMIT 1 FOR UPDATE`,
       [user.id, tsLocal]

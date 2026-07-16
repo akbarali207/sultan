@@ -108,6 +108,40 @@ const startServer = () => app.listen(PORT, () => {
     console.log('[Hikvision] poller start xatosi:', e.message);
   }
 
+  // SROK NAZORATI (F12): har 6 soatda tugayotgan/o'tgan partiyalarni
+  // tekshirib bildirishnoma beradi (notify -> console/kelajakda FCM) va
+  // frontendga 'stock' hodisasi yuboradi (ochiq sahifalar yangilanadi).
+  const checkExpiry = async () => {
+    try {
+      const { getSetting } = require('./services/costingService');
+      const warnDays = parseInt(await getSetting(pool, 'expiry_warn_days', '5'), 10) || 5;
+      const r = await pool.query(
+        `SELECT
+           COUNT(*) FILTER (WHERE expiry_date < CURRENT_DATE)::int AS expired,
+           COALESCE(ROUND(SUM((quantity - used_quantity) * unit_cost)
+             FILTER (WHERE expiry_date < CURRENT_DATE), 2), 0) AS expired_value,
+           COUNT(*) FILTER (WHERE expiry_date >= CURRENT_DATE
+             AND expiry_date <= CURRENT_DATE + ($1 || ' days')::interval)::int AS expiring
+         FROM stock_lots
+         WHERE expiry_date IS NOT NULL AND status IN ('active','blocked')
+           AND (quantity - used_quantity) > 0`, [warnDays]);
+      const s = r.rows[0];
+      if (s.expired > 0 || s.expiring > 0) {
+        const { notify } = require('./services/notify');
+        await notify({
+          title: 'Srok nazorati',
+          body: `O'tgan: ${s.expired} partiya (${s.expired_value} so'm), ${warnDays} kun ichida tugaydi: ${s.expiring}`,
+          topic: 'expiry', entity: 'stock',
+        });
+        try { require('./services/eventBus').emit('stock', null); } catch (_) {}
+      }
+    } catch (e) {
+      console.log('[expiry] tekshiruv xatosi:', e.message);
+    }
+  };
+  setTimeout(checkExpiry, 60 * 1000);               // startdan 1 daqiqa keyin
+  setInterval(checkExpiry, 6 * 60 * 60 * 1000);     // keyin har 6 soatda
+
   // Print-agent'ni backend bilan birga avtomatik ishga tushirish (lokal).
   // Bulutga chiqishda PRINT_AGENT_AUTOSTART=false qilib o'chiriladi (agent lokal ko'prikda ishlaydi).
   if (process.env.PRINT_AGENT_AUTOSTART !== 'false') {

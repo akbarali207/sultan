@@ -1,4 +1,6 @@
 const pool = require('../config/db');
+const { consumeStock, createLot } = require('../services/costingService');
+const { logAudit } = require('../services/audit');
 
 // Barcha inventarizatsiyalar (ixtiyoriy ?warehouse_id va ?type filtri bilan)
 const getInventories = async (req, res) => {
@@ -171,6 +173,19 @@ const closeInventory = async (req, res) => {
     await client.query('BEGIN');
     const { id } = req.params;
 
+    // QAYTA YOPISH HIMOYASI: yopilgan inventarizatsiya ikkinchi marta
+    // yopilsa qoldiqlar buzilardi (hisoblanmagan pozitsiyalar 0 bo'lib ketadi).
+    const chk = await client.query(
+      `SELECT status FROM inventory_checks WHERE id = $1 FOR UPDATE`, [id]);
+    if (!chk.rows.length) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ message: 'Inventarizatsiya topilmadi' });
+    }
+    if (chk.rows[0].status === 'closed') {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ message: 'Bu inventarizatsiya allaqachon yopilgan' });
+    }
+
     // Haqiqiy miqdorlarni manbaga (sklad yoki idishlar katalogi) yozish
     const items = await client.query(
       `SELECT * FROM inventory_items WHERE inventory_id = $1`,
@@ -193,7 +208,7 @@ const closeInventory = async (req, res) => {
       } else if (item.ingredient_id) {
         // Eski qoldiqni o'qib olib, faqat O'ZGARSA audit log yozamiz
         const prev = await client.query(
-          `SELECT stock_quantity FROM ingredients WHERE id = $1`,
+          `SELECT stock_quantity, price_per_unit, unit FROM ingredients WHERE id = $1 FOR UPDATE`,
           [item.ingredient_id]
         );
         const oldQty = prev.rows[0] ? prev.rows[0].stock_quantity : null;
@@ -201,6 +216,23 @@ const closeInventory = async (req, res) => {
           `UPDATE ingredients SET stock_quantity = $1 WHERE id = $2`,
           [item.actual_quantity, item.ingredient_id]
         );
+        // PARTIYA MOSLASH: kamomad partiyalardan chegiriladi (yo'qotish
+        // qiymati bilan qayd etiladi), ortiqcha — korrektirovka partiyasi.
+        const delta = (Number(item.actual_quantity) || 0) - (Number(oldQty) || 0);
+        if (delta < -0.0005) {
+          await consumeStock(client, {
+            ingredientId: item.ingredient_id, quantity: -delta,
+            reason: 'inventory', refType: 'inventory', refId: parseInt(id),
+            note: 'Inventarizatsiya kamomad', adjustIngredient: false,
+          });
+        } else if (delta > 0.0005 && prev.rows[0]) {
+          await createLot(client, {
+            ingredientId: item.ingredient_id, quantity: delta,
+            unit: prev.rows[0].unit, unitCost: parseFloat(prev.rows[0].price_per_unit) || 0,
+            note: `Inventarizatsiya ortiqcha (#${id})`,
+            createdBy: req.user ? req.user.id : null,
+          });
+        }
         if (String(oldQty) !== String(item.actual_quantity)) {
           await client.query(
             `INSERT INTO stock_change_log (ingredient_id, user_id, user_name, changes, reason)
@@ -221,6 +253,10 @@ const closeInventory = async (req, res) => {
       `UPDATE inventory_checks SET status = 'closed' WHERE id = $1`,
       [id]
     );
+    await logAudit(client, {
+      req, action: 'inventory.close', entityType: 'inventory', entityId: parseInt(id),
+      newValue: { items: items.rows.length }, userName: inventoryUserName,
+    });
 
     await client.query('COMMIT');
     res.json({ message: 'Inventarizatsiya yakunlandi!' });

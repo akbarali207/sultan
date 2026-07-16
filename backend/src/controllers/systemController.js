@@ -21,11 +21,11 @@ const getState = async (req, res) => {
   }
 };
 
-// STOP / ochish — admin, director yoki super-admin (guest).
-// Egasi so'radi: "admin ham bitta tugma bilan butun ilovani to'xtata olsin".
+// STOP / ochish — FAQAT super-admin (guest). Egasi so'radi (2026-07-13):
+// "STOP tugmasi faqat super-adminda bo'lsin" (admin/director endi to'xtata olmaydi).
 const setFreeze = async (req, res) => {
-  if (!req.user || !['admin', 'director', 'guest'].includes(req.user.role)) {
-    return res.status(403).json({ message: 'Faqat admin yoki super-admin' });
+  if (!req.user || req.user.role !== 'guest') {
+    return res.status(403).json({ message: 'Faqat super-admin (guest)' });
   }
   try {
     const frozen = req.body.frozen === true || req.body.frozen === 'true';

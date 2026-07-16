@@ -1,5 +1,6 @@
 const pool = require('../config/db');
 const { emit } = require('../services/eventBus');
+const { consumeStock, restoreConsumption } = require('../services/costingService');
 
 // Zakazlar ustidan to'liq huquq — kassir/admin/nazoratchi/egasi.
 // MUHIM: oldin tekshiruvlar "role === 'waiter'" (qora ro'yxat) edi — bu chef/cleaner
@@ -260,7 +261,10 @@ const createOrder = async (req, res) => {
   }
 };
 
-// Skladdan ayirish (zakaz to'langanda) — mavjud mantiq
+// Skladdan ayirish (zakaz to'langanda) — PARTIYALAR orqali (F10/F11):
+// tanlangan metod (FIFO/LIFO/AVG) bo'yicha chegiriladi, har sarf o'sha
+// paytdagi TANNARX bilan lot_consumptions ga yoziladi (tarixiy COGS
+// keyin narx o'zgarsa ham o'zgarmaydi).
 const deductStock = async (client, orderId) => {
   const items = await client.query(
     `SELECT oi.menu_item_id, oi.quantity, mi.type, mi.ingredient_id
@@ -270,27 +274,34 @@ const deductStock = async (client, orderId) => {
   );
   for (const item of items.rows) {
     if (item.type === 'product' && item.ingredient_id) {
-      await client.query(
-        `UPDATE ingredients SET stock_quantity = stock_quantity - $1 WHERE id = $2`,
-        [item.quantity, item.ingredient_id]
-      );
+      await consumeStock(client, {
+        ingredientId: item.ingredient_id, quantity: item.quantity,
+        reason: 'sale', refType: 'order', refId: orderId,
+      });
     } else {
       const recipe = await client.query(
         `SELECT ingredient_id, quantity FROM recipe_items WHERE menu_item_id = $1`,
         [item.menu_item_id]
       );
       for (const r of recipe.rows) {
-        await client.query(
-          `UPDATE ingredients SET stock_quantity = stock_quantity - $1 WHERE id = $2`,
-          [r.quantity * item.quantity, r.ingredient_id]
-        );
+        await consumeStock(client, {
+          ingredientId: r.ingredient_id, quantity: r.quantity * item.quantity,
+          reason: 'sale', refType: 'order', refId: orderId,
+        });
       }
     }
   }
 };
 
-// Skladga QAYTARISH (zakaz/taom o'chirilganda — deductStock ning teskarisi)
+// Skladga QAYTARISH (zakaz/taom o'chirilganda — deductStock ning teskarisi).
+// Avval partiya sarflarini AYNAN teskari qaytaramiz (qaysi partiyadan
+// chegirilgan bo'lsa o'shalarga). Yozuv topilmasa (partiya tizimidan
+// OLDINGI zakaz) — eski retsept-matematika bilan qaytariladi.
 const restoreStock = async (client, orderId, itemId = null) => {
+  if (!itemId) {
+    const restored = await restoreConsumption(client, { refType: 'order', refId: orderId });
+    if (restored.length > 0) return;
+  }
   const params = [orderId];
   let extra = '';
   if (itemId) { params.push(itemId); extra = ' AND oi.id = $2'; }
@@ -600,6 +611,14 @@ const updateOrderStatus = async (req, res) => {
       if (Math.abs(sum - finalAmount) > 1) {
         await client.query('ROLLBACK');
         return res.status(400).json({ message: `To'lov (${sum}) yakuniy summaga (${finalAmount}) teng emas` });
+      }
+      // ±1 yaxlitlash farqini bitta ustunga singdiramiz — kassa/qarz aniq final_amount ga teng bo'lsin
+      // (aks holda savdo/kassa svergasида 1 birlik dreyf to'planadi). |farq| <= 1, har ustun >= 0.
+      const diff = finalAmount - sum;
+      if (diff !== 0) {
+        if (cash + diff >= 0) cash += diff;
+        else if (card + diff >= 0) card += diff;
+        else debt += diff;
       }
       const debtorName = (req.body.debtor_name || '').toString().trim().slice(0, 120);
       if (debt > 0 && !debtorName) {

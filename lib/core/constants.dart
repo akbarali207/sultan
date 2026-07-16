@@ -44,6 +44,8 @@ class AppConstants {
   static const String debts = '/reports/debts';
   static const String stock = '/stock';
   static const String stockIncoming = '/stock/incoming';
+  static const String stockTransfer = '/stock/transfer';
+  static const String stockDivideSlices = '/stock/divide-slices';
   static const String stockLow = '/stock/low';
   static const String warehouses = '/stock/warehouses';
   static const String stockAssignFromRecipe = '/stock/assign-from-recipe';

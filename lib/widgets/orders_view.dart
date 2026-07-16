@@ -336,7 +336,7 @@ class _OrdersViewState extends State<OrdersView> {
         backgroundColor: _card,
         title: Text(title ?? tr('Stolni ko\'chirish / birlashtirish'), style: TextStyle(color: _text, fontSize: 16)),
         content: SizedBox(
-          width: 340,
+          width: (MediaQuery.of(context).size.width * 0.9).clamp(0.0, 340.0),
           child: SingleChildScrollView(
             child: Wrap(
               spacing: 8,
@@ -427,7 +427,7 @@ class _OrdersViewState extends State<OrdersView> {
             backgroundColor: _card,
             title: Text(tr('Qaysi taomni ko\'chiramiz?'), style: TextStyle(color: _text, fontSize: 16)),
             content: SizedBox(
-              width: 360,
+              width: (MediaQuery.of(context).size.width * 0.9).clamp(0.0, 360.0),
               child: SingleChildScrollView(
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
@@ -1042,7 +1042,7 @@ class _PaymentDialogState extends State<_PaymentDialog> {
       backgroundColor: AppTheme.card,
       title: Text('${tr('To\'lov')}  •  #${widget.order['id']}', style: TextStyle(color: AppTheme.text)),
       content: SizedBox(
-        width: 340,
+        width: (MediaQuery.of(context).size.width * 0.9).clamp(0.0, 340.0),
         child: SingleChildScrollView(
           child: Column(
             mainAxisSize: MainAxisSize.min,

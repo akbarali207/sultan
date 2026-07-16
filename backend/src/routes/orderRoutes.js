@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const auth = require('../middleware/authMiddleware');
 const { requireRole } = require('../middleware/roleMiddleware');
+const blockIfFrozen = require('../middleware/freezeGuard'); // AUDIT-FIX #4: STOP paytida pul amallarini bloklash
 const {
   getTables, createTable,
   createOrder, getOrders, getOrderItems,
@@ -19,9 +20,9 @@ router.get('/:id/items', auth, getOrderItems);
 router.put('/:id/status', auth, updateOrderStatus);
 router.put('/:id/move', auth, moveOrder); // stolni ko'chirish / birlashtirish
 router.put('/:id/move-items', auth, moveOrderItems); // QISMAN ko'chirish (tanlangan taomlar/miqdor)
-router.put('/:id/reopen', auth, reopenOrder); // to'langan zakazni qayta ochish (to'lovni tuzatish)
+router.put('/:id/reopen', auth, blockIfFrozen, reopenOrder); // to'langan zakazni qayta ochish (to'lovni tuzatish) — STOP paytida bloklanadi
 router.post('/:id/bill', auth, printBill); // hisob/chek chiqarish (bill_requested)
 router.delete('/:orderId/items/:itemId', auth, cancelOrderItem); // bitta taomni bekor qilish
-router.delete('/:id', auth, deleteOrder); // butun zakazni o'chirish
+router.delete('/:id', auth, blockIfFrozen, deleteOrder); // butun zakazni o'chirish — STOP paytida bloklanadi
 
 module.exports = router;

@@ -1,8 +1,7 @@
 plugins {
     id("com.android.application")
-    // START: FlutterFire Configuration
-    id("com.google.gms.google-services")
-    // END: FlutterFire Configuration
+    // Firebase (google-services) OLIB TASHLANDI 2026-07-14 — loyiha local-first,
+    // firebase ishlatilmaydi; plagin dl.google.com'dan yuklanib Android build'ni to'sardi.
     id("kotlin-android")
     // The Flutter Gradle Plugin must be applied after the Android and Kotlin Gradle plugins.
     id("dev.flutter.flutter-gradle-plugin")

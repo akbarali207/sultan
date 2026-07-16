@@ -664,7 +664,7 @@ class _CashboxViewState extends State<CashboxView> {
           backgroundColor: AppTheme.card,
           title: Text(tr('Kun yakunlash (Z)'), style: TextStyle(color: AppTheme.text, fontSize: 17)),
           content: SizedBox(
-            width: 360,
+            width: (MediaQuery.of(context).size.width * 0.9).clamp(0.0, 360.0),
             child: SingleChildScrollView(
               child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
                 Text(tr('Kunni yopish (Z-hisobot). Vaqtida (02:30 gача) yopilmasa — direktor tasdig\'i kerak.'),
@@ -848,21 +848,33 @@ class _CashboxViewState extends State<CashboxView> {
                     const SizedBox(width: 8),
                     Text(tr('Kassa'),
                         style: TextStyle(color: AppTheme.text, fontSize: 18, fontWeight: FontWeight.bold)),
-                    const Spacer(),
-                    _periodChip(tr('Bugun'), 'today'),
-                    _periodChip(tr('Hafta'), 'week'),
-                    _periodChip(tr('Oy'), 'month'),
-                    _dateChip(),
-                    const SizedBox(width: 4),
-                    IconButton(
-                      tooltip: tr('Kassani ochish'),
-                      icon: Icon(Icons.lock_open, color: AppTheme.accent),
-                      onPressed: _openRegister,
-                    ),
-                    IconButton(
-                      tooltip: tr('PDF hisobot'),
-                      icon: Icon(Icons.picture_as_pdf, color: AppTheme.accent),
-                      onPressed: _data == null ? null : _showPdfMenu,
+                    const SizedBox(width: 8),
+                    // Chiplar + tugmalar tor telefonda sig'masa — gorizontal scroll (reverse: o'ngga tekislangan)
+                    Expanded(
+                      child: SingleChildScrollView(
+                        scrollDirection: Axis.horizontal,
+                        reverse: true,
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            _periodChip(tr('Bugun'), 'today'),
+                            _periodChip(tr('Hafta'), 'week'),
+                            _periodChip(tr('Oy'), 'month'),
+                            _dateChip(),
+                            const SizedBox(width: 4),
+                            IconButton(
+                              tooltip: tr('Kassani ochish'),
+                              icon: Icon(Icons.lock_open, color: AppTheme.accent),
+                              onPressed: _openRegister,
+                            ),
+                            IconButton(
+                              tooltip: tr('PDF hisobot'),
+                              icon: Icon(Icons.picture_as_pdf, color: AppTheme.accent),
+                              onPressed: _data == null ? null : _showPdfMenu,
+                            ),
+                          ],
+                        ),
+                      ),
                     ),
                   ],
                 ),

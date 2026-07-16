@@ -487,6 +487,7 @@ const getMenuItemCost = async (req, res) => {
         profit: Math.round(profit),
         profit_percent,
         ingredients: [],
+        has_recipe: !!ing, // mahsulot ingredientга bog'langan bo'lsa — tannarx asosi bor
       });
     }
 
@@ -519,6 +520,7 @@ const getMenuItemCost = async (req, res) => {
         price_per_unit: parseFloat(ing.price_per_unit),
         total: Math.round(parseFloat(ing.total || 0)),
       })),
+      has_recipe: ingredients.length > 0, // retsept satrlari bor-yo'qligi (yo'q bo'lsa — tannarх yo'q)
     });
   } catch (err) {
     res.status(500).json({ message: err.message });

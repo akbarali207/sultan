@@ -213,7 +213,7 @@ class _WaiterScreenState extends State<WaiterScreen> {
         backgroundColor: _card,
         title: Text(tr('Printerni tanlang'), style: TextStyle(color: _text, fontSize: 16)),
         content: SizedBox(
-          width: 420,
+          width: (MediaQuery.of(context).size.width * 0.9).clamp(0.0, 420.0),
           child: ListView(
             shrinkWrap: true,
             children: printers.map((p) {
@@ -353,7 +353,7 @@ class _WaiterScreenState extends State<WaiterScreen> {
         title: Text(tr('Zakaz tasdiqlash'),
             style: TextStyle(color: _text, fontSize: 16, fontWeight: FontWeight.bold)),
         content: SizedBox(
-          width: 380,
+          width: (MediaQuery.of(context).size.width * 0.9).clamp(0.0, 380.0),
           child: SingleChildScrollView(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -563,6 +563,9 @@ class _WaiterScreenState extends State<WaiterScreen> {
         selectedItemColor: _accent,
         unselectedItemColor: _textSoft,
         type: BottomNavigationBarType.fixed,
+        // Tor telefonda yorliqlar ("Zakazlar") sig'masligi mumkin — shriftni kichraytiramiz
+        selectedFontSize: 11,
+        unselectedFontSize: 10,
         currentIndex: _selectedIndex,
         elevation: 12,
         onTap: (i) {
